@@ -5,6 +5,16 @@ All notable changes to Pocketwatcher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-01-20
+
+### Added
+- **Market cap tracking at alert time**: Alerts now capture price_sol, mcap_sol, and token_supply at the moment they fire
+  - Price calculated from recent swap data (weighted average of buys)
+  - Token supply fetched via Helius getAccountInfo (1 credit per call)
+  - Database schema updated with new columns
+- **Daily report script**: `scripts/daily_report.py` generates performance reports comparing alert-time values with current prices
+- **GMGN client**: `scripts/gmgn_client.py` for fetching current token prices from GMGN (adapted from sauron)
+
 ## [0.1.2] - 2026-01-20
 
 ### Fixed

@@ -173,6 +173,11 @@ class Alert:
     cluster_summary: Optional[str] = None
     enrichment_degraded: bool = False
 
+    # Price/Market cap at alert time
+    price_sol: Optional[float] = None      # Price per token in SOL
+    mcap_sol: Optional[float] = None       # Market cap in SOL
+    token_supply: Optional[int] = None     # Total supply (raw, not decimal-adjusted)
+
     # Timestamps
     created_at: Optional[datetime] = None
 
@@ -199,6 +204,9 @@ class Alert:
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "discord_sent": self.discord_sent,
             "telegram_sent": self.telegram_sent,
+            "price_sol": self.price_sol,
+            "mcap_sol": self.mcap_sol,
+            "token_supply": self.token_supply,
         }
 
     @classmethod
@@ -221,4 +229,7 @@ class Alert:
             created_at=datetime.fromisoformat(d["created_at"]) if d.get("created_at") else None,
             discord_sent=d.get("discord_sent", False),
             telegram_sent=d.get("telegram_sent", False),
+            price_sol=d.get("price_sol"),
+            mcap_sol=d.get("mcap_sol"),
+            token_supply=d.get("token_supply"),
         )

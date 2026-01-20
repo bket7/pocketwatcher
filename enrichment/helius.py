@@ -348,6 +348,36 @@ class HeliusClient:
 
         return None
 
+    async def get_token_supply(self, mint: str) -> Optional[Dict[str, Any]]:
+        """
+        Get token supply and decimals.
+
+        Cost: 1 credit per call.
+
+        Returns dict with:
+        - supply: int (raw supply, not decimal-adjusted)
+        - decimals: int
+        """
+        result = await self._rpc_call(
+            "getAccountInfo",
+            [mint, {"encoding": "jsonParsed"}],
+            credits=CREDIT_COSTS["getAccountInfo"]
+        )
+
+        if result and result.get("value"):
+            data = result["value"].get("data", {})
+            if isinstance(data, dict) and "parsed" in data:
+                info = data["parsed"].get("info", {})
+                supply_str = info.get("supply")
+                decimals = info.get("decimals", 9)
+                if supply_str is not None:
+                    return {
+                        "supply": int(supply_str),
+                        "decimals": decimals,
+                    }
+
+        return None
+
     def is_degraded(self) -> bool:
         """Check if enrichment is degraded due to budget."""
         return self.credit_bucket.is_degraded()

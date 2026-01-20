@@ -147,6 +147,17 @@ class PostgresClient:
                 ON alerts(mint, created_at DESC)
             """)
 
+            # Add price/mcap columns to alerts table (migration)
+            await conn.execute("""
+                ALTER TABLE alerts ADD COLUMN IF NOT EXISTS price_sol DOUBLE PRECISION;
+            """)
+            await conn.execute("""
+                ALTER TABLE alerts ADD COLUMN IF NOT EXISTS mcap_sol DOUBLE PRECISION;
+            """)
+            await conn.execute("""
+                ALTER TABLE alerts ADD COLUMN IF NOT EXISTS token_supply BIGINT;
+            """)
+
             logger.info("Database tables created/verified")
 
     # ============== Token Profile Operations ==============
@@ -429,8 +440,9 @@ class PostgresClient:
                 INSERT INTO alerts (
                     mint, token_name, token_symbol, trigger_name, trigger_reason,
                     buy_count_5m, unique_buyers_5m, volume_sol_5m, buy_sell_ratio_5m,
-                    top_buyers, cluster_summary, enrichment_degraded
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                    top_buyers, cluster_summary, enrichment_degraded,
+                    price_sol, mcap_sol, token_supply
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                 RETURNING id, created_at
             """,
                 alert.mint,
@@ -445,6 +457,9 @@ class PostgresClient:
                 str(alert.top_buyers),  # JSONB
                 alert.cluster_summary,
                 alert.enrichment_degraded,
+                alert.price_sol,
+                alert.mcap_sol,
+                alert.token_supply,
             )
             return row["id"]
 
@@ -489,6 +504,9 @@ class PostgresClient:
                     created_at=row["created_at"],
                     discord_sent=row["discord_sent"],
                     telegram_sent=row["telegram_sent"],
+                    price_sol=row["price_sol"],
+                    mcap_sol=row["mcap_sol"],
+                    token_supply=row["token_supply"],
                 )
                 for row in rows
             ]

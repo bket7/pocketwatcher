@@ -255,6 +255,51 @@ class TransactionProcessor:
             # Create and send alert
             await self._create_alert(mint, result)
 
+    async def _calculate_price_and_mcap(self, mint: str) -> Dict[str, Any]:
+        """
+        Calculate price and market cap for a token at alert time.
+
+        Returns dict with price_sol, mcap_sol, token_supply (or None values if unavailable).
+        """
+        result = {"price_sol": None, "mcap_sol": None, "token_supply": None}
+
+        try:
+            # Get recent swaps (buys only for price calculation)
+            swaps = await self.postgres.get_recent_swaps(mint, limit=20)
+            buys = [s for s in swaps if s.side.value == "buy"]
+
+            if buys:
+                # Calculate weighted average price: sum(quote) / sum(base)
+                total_quote = sum(s.quote_amount for s in buys)  # in lamports
+                total_base = sum(s.base_amount for s in buys)    # in token units
+
+                if total_base > 0:
+                    # Price in SOL per raw token unit
+                    price_per_unit = (total_quote / 1e9) / total_base
+
+                    # Fetch token supply and decimals
+                    supply_info = await self.helius.get_token_supply(mint)
+
+                    if supply_info:
+                        raw_supply = supply_info["supply"]
+                        decimals = supply_info["decimals"]
+
+                        # Adjust price for decimals (price per whole token)
+                        price_sol = price_per_unit * (10 ** decimals)
+
+                        # Market cap = price * circulating supply (in whole tokens)
+                        supply_whole_tokens = raw_supply / (10 ** decimals)
+                        mcap_sol = price_sol * supply_whole_tokens
+
+                        result["price_sol"] = price_sol
+                        result["mcap_sol"] = mcap_sol
+                        result["token_supply"] = raw_supply
+
+        except Exception as e:
+            logger.warning(f"Failed to calculate price/mcap for {mint[:8]}: {e}")
+
+        return result
+
     async def _create_alert(self, mint: str, trigger_result: TriggerResult):
         """Create and send an alert for a HOT token."""
         self._alert_count += 1
@@ -280,6 +325,9 @@ class TransactionProcessor:
         # Check enrichment status
         enrichment_degraded = self.helius.is_degraded()
 
+        # Calculate price and market cap at alert time
+        price_mcap = await self._calculate_price_and_mcap(mint)
+
         # Create alert
         alert = Alert(
             mint=mint,
@@ -295,6 +343,9 @@ class TransactionProcessor:
             cluster_summary=cluster_summary,
             enrichment_degraded=enrichment_degraded,
             created_at=datetime.utcnow(),
+            price_sol=price_mcap["price_sol"],
+            mcap_sol=price_mcap["mcap_sol"],
+            token_supply=price_mcap["token_supply"],
         )
 
         # Store alert
