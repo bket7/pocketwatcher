@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `whale_concentration`: Now requires ≥10 SOL volume, ≥10 buys, and 80% concentration (was 60%)
   - All other triggers also have volume minimums
 
+### Fixed
+- **Token image always fetched**: DexScreener is now always queried for image, not just when name/symbol missing
+- **Database migration**: Added venue and token_image columns to alerts table
+
 ### Removed
 - Supply display removed from alerts (was showing "1.0B tokens" which is not useful)
 
