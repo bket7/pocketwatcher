@@ -54,34 +54,46 @@ class AlertFormatter:
     ) -> dict:
         """
         Format alert as a clean, scannable Discord embed.
+        Token first, risk indicated by color + emoji only.
         """
-        # Determine risk level
+        # Determine risk level (for color only)
         risk_level = AlertFormatter._get_risk_level(cto_score) if cto_score else "MEDIUM"
         color = AlertFormatter.RISK_COLORS.get(risk_level, 0xFFAA00)
         risk_emoji = AlertFormatter.RISK_EMOJI.get(risk_level, "\U0001F7E0")
 
-        # Token display
-        if alert.token_name and alert.token_symbol:
-            token_display = f"{alert.token_name} (${alert.token_symbol})"
-        elif alert.token_symbol:
-            token_display = f"${alert.token_symbol}"
+        # Token display - ticker first, prominent
+        if alert.token_symbol:
+            ticker = f"${alert.token_symbol}"
         else:
-            token_display = f"`{alert.mint[:12]}...`"
+            ticker = f"`{alert.mint[:8]}...`"
 
-        # Build title with risk indicator
-        if cto_score:
-            title = f"{risk_emoji} {risk_level} RISK - {token_display}"
-        else:
-            title = f"{risk_emoji} POTENTIAL CTO - {token_display}"
+        # Build title: emoji (risk color) + ticker
+        title = f"{risk_emoji} {ticker}"
 
-        # Build description with trigger explanation
-        trigger_human = alert.trigger_name.replace("_", " ").title()
+        # Description: token metadata + market cap
+        desc_lines = []
+
+        # Token name if available
+        if alert.token_name and alert.token_name != alert.token_symbol:
+            desc_lines.append(f"**{alert.token_name}**")
+
+        # Market cap at alert time
+        if alert.mcap_sol is not None:
+            mcap_display = AlertFormatter._format_mcap(alert.mcap_sol)
+            desc_lines.append(f"\U0001F4B0 **{mcap_display}** mcap")
+        elif alert.token_supply is not None:
+            # Show supply if mcap not available
+            supply_b = alert.token_supply / 1e15  # Assume 6 decimals, show in billions
+            desc_lines.append(f"\U0001F4CA Supply: {supply_b:.1f}B tokens")
+
+        # Trigger pattern (subtle)
         trigger_desc = AlertFormatter.TRIGGER_DESCRIPTIONS.get(
             alert.trigger_name,
             alert.trigger_reason
         )
+        desc_lines.append(f"\n_{trigger_desc}_")
 
-        description = f"**{trigger_human}**\n{trigger_desc}"
+        description = "\n".join(desc_lines)
 
         # === FIELDS ===
         fields = []
@@ -319,6 +331,16 @@ class AlertFormatter:
             return f"{ratio:.0f}x"
         else:
             return f"{ratio:.1f}x"
+
+    @staticmethod
+    def _format_mcap(mcap_sol: float) -> str:
+        """Format market cap in SOL for display."""
+        if mcap_sol >= 1_000_000:
+            return f"{mcap_sol / 1_000_000:.1f}M SOL"
+        elif mcap_sol >= 1_000:
+            return f"{mcap_sol / 1_000:.1f}K SOL"
+        else:
+            return f"{mcap_sol:.1f} SOL"
 
     @staticmethod
     def _get_risk_level(score: Optional[CTOScore]) -> str:
