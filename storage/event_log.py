@@ -67,7 +67,15 @@ class EventLog:
         current_bucket = now // ROTATION_INTERVAL_SECONDS
 
         if self._current_file_time != current_bucket:
-            await self._flush_buffer()
+            # Flush to OLD file first (if we have one and have buffered data)
+            if self._current_file and self._buffer:
+                for record in self._buffer:
+                    await self._current_file.write(record)
+                await self._current_file.flush()
+                logger.debug(f"Flushed {len(self._buffer)} events before rotation")
+                self._buffer = []
+                self._buffer_size = 0
+
             await self._close_current_file()
             file_path = self._get_file_path(now)
             self._current_file = await aiofiles.open(file_path, "ab")

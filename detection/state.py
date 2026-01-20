@@ -203,7 +203,7 @@ class StateManager:
     def get_stats(self) -> dict:
         """Get state manager statistics."""
         state_counts = {}
-        for state in self._state_cache.values():
+        for state in list(self._state_cache.values()):
             state_counts[state.value] = state_counts.get(state.value, 0) + 1
 
         return {

@@ -109,16 +109,22 @@ class AlertFormatter:
             score_text = f"{bar} **{score_pct}%**\n"
 
             # Add top contributing factors
-            if cto_score.component_scores:
-                top_factors = sorted(
-                    cto_score.component_scores.items(),
-                    key=lambda x: x[1],
-                    reverse=True
-                )[:3]
-                for factor, value in top_factors:
-                    if value > 0.1:
-                        factor_name = factor.replace("_", " ").title()
-                        score_text += f"\u2022 {factor_name}: {value:.0%}\n"
+            component_scores = {
+                "concentration": cto_score.concentration_score,
+                "cluster": cto_score.cluster_score,
+                "timing": cto_score.timing_score,
+                "new_wallet": cto_score.new_wallet_score,
+                "ratio": cto_score.ratio_score,
+            }
+            top_factors = sorted(
+                component_scores.items(),
+                key=lambda x: x[1],
+                reverse=True
+            )[:3]
+            for factor, value in top_factors:
+                if value > 0.1:
+                    factor_name = factor.replace("_", " ").title()
+                    score_text += f"\u2022 {factor_name}: {value:.0%}\n"
 
             fields.append({
                 "name": "\U0001F3AF CTO Likelihood",

@@ -237,28 +237,72 @@ class Application:
 
     def _tx_to_dict(self, tx) -> dict:
         """Convert transaction to dict for serialization."""
+        import base58
+
         # Handle both protobuf and dict formats
         if isinstance(tx, dict):
             return tx
 
-        # Assume protobuf-style object
+        # Yellowstone SubscribeUpdateTransaction structure:
+        # tx.transaction = SubscribeUpdateTransactionInfo
+        # tx.transaction.signature = bytes
+        # tx.transaction.transaction = solana.storage.ConfirmedBlock.Transaction
+        # tx.transaction.meta = TransactionStatusMeta
+        # tx.slot = uint64
         try:
+            tx_info = tx.transaction  # SubscribeUpdateTransactionInfo
+            inner_tx = tx_info.transaction  # The actual Transaction proto
+            meta = tx_info.meta  # TransactionStatusMeta
+
+            # Convert signature bytes to base58
+            sig_bytes = bytes(tx_info.signature)
+            signature = base58.b58encode(sig_bytes).decode() if sig_bytes else ""
+
+            # Get account keys from the transaction message
+            account_keys = []
+            if inner_tx and inner_tx.message:
+                for k in inner_tx.message.account_keys:
+                    account_keys.append(base58.b58encode(bytes(k)).decode())
+
+            # Get fee payer (first account key)
+            fee_payer = account_keys[0] if account_keys else ""
+
+            # Convert token balances - note: mint and owner are strings in TokenBalance
+            pre_token_balances = []
+            post_token_balances = []
+            if meta:
+                for bal in meta.pre_token_balances:
+                    pre_token_balances.append({
+                        "account_index": bal.account_index,
+                        "mint": bal.mint,  # Already a string
+                        "owner": bal.owner,  # Already a string
+                        "amount": bal.ui_token_amount.amount if bal.ui_token_amount else "0",
+                    })
+                for bal in meta.post_token_balances:
+                    post_token_balances.append({
+                        "account_index": bal.account_index,
+                        "mint": bal.mint,  # Already a string
+                        "owner": bal.owner,  # Already a string
+                        "amount": bal.ui_token_amount.amount if bal.ui_token_amount else "0",
+                    })
+
             return {
-                "signature": tx.signature if hasattr(tx, "signature") else str(tx),
-                "slot": tx.slot if hasattr(tx, "slot") else 0,
-                "block_time": tx.block_time if hasattr(tx, "block_time") else 0,
-                "fee_payer": tx.transaction.message.account_keys[0] if hasattr(tx, "transaction") else "",
-                "account_keys": list(tx.transaction.message.account_keys) if hasattr(tx, "transaction") else [],
-                "pre_token_balances": list(tx.meta.pre_token_balances) if hasattr(tx, "meta") else [],
-                "post_token_balances": list(tx.meta.post_token_balances) if hasattr(tx, "meta") else [],
-                "pre_balances": list(tx.meta.pre_balances) if hasattr(tx, "meta") else [],
-                "post_balances": list(tx.meta.post_balances) if hasattr(tx, "meta") else [],
-                "fee": tx.meta.fee if hasattr(tx, "meta") else 0,
-                "inner_instructions": list(tx.meta.inner_instructions) if hasattr(tx, "meta") else [],
+                "signature": signature,
+                "slot": tx.slot,
+                "block_time": 0,  # Not available in this proto structure
+                "fee_payer": fee_payer,
+                "account_keys": account_keys,
+                "pre_token_balances": pre_token_balances,
+                "post_token_balances": post_token_balances,
+                "pre_balances": list(meta.pre_balances) if meta else [],
+                "post_balances": list(meta.post_balances) if meta else [],
+                "fee": meta.fee if meta else 0,
+                "inner_instructions": [],  # Complex to convert, skip for now
             }
         except Exception as e:
             logger.warning(f"Failed to convert tx to dict: {e}")
-            return {"raw": str(tx)}
+            # Don't try to stringify protobuf - it can cause recursion
+            return {"signature": "unknown", "error": str(e)}
 
     async def _run_consumer(self):
         """Run the Redis stream consumer."""
@@ -280,7 +324,9 @@ class Application:
                 await self.processor.process_transaction(tx_data)
 
             except Exception as e:
+                import traceback
                 logger.error(f"Consumer error: {e}")
+                logger.debug(f"Consumer traceback:\n{traceback.format_exc()}")
 
         async def on_error(msg_id, error):
             """Handle consumer errors."""

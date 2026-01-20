@@ -5,6 +5,14 @@ All notable changes to Pocketwatcher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-01-20
+
+### Fixed
+- **Recursion error in EventLog**: Fixed circular call between `_get_file()` and `_flush_buffer()` that caused maximum recursion depth exceeded errors during log rotation
+- **CTOScore attribute error**: Fixed alert formatter accessing non-existent `component_scores` attribute - now correctly builds component scores dict from individual attributes
+- **Set iteration error**: Fixed potential "set changed size during iteration" error in StateManager by copying dict values before iteration
+- **Yellowstone authentication**: Confirmed correct x-token authentication format for Chainstack Yellowstone gRPC
+
 ## [0.1.0] - 2025-01-20
 
 ### Added

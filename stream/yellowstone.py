@@ -150,6 +150,20 @@ class YellowstoneClient:
 
         return request
 
+    async def _request_iterator(self):
+        """
+        Async generator that yields subscribe requests.
+        For bidirectional streaming, we send one initial request then keep connection open.
+        """
+        yield self._build_subscribe_request()
+        # Keep the stream open by not returning - we just don't send more requests
+        # The server will keep sending us updates
+        while self._running:
+            await asyncio.sleep(30)  # Send periodic ping to keep alive
+            yield geyser_pb2.SubscribeRequest(
+                ping=geyser_pb2.SubscribeRequestPing(id=int(time.time()))
+            )
+
     async def stream_transactions(
         self,
         on_transaction: Callable,
@@ -170,18 +184,18 @@ class YellowstoneClient:
                 if not self._stub:
                     await self.connect()
 
-                request = self._build_subscribe_request()
+                # Bidirectional streaming: pass request iterator, get response iterator
+                response_stream = self._stub.Subscribe(self._request_iterator())
 
-                async for response in self._stub.Subscribe(request):
+                async for response in response_stream:
                     if not self._running:
                         break
 
+                    # Handle different update types
                     if response.HasField("transaction"):
                         tx = response.transaction
                         self._tx_count += 1
                         self._last_slot = tx.slot
-                        if hasattr(tx, "block_time") and tx.block_time:
-                            self._last_block_time = tx.block_time
 
                         try:
                             await on_transaction(tx)
@@ -189,6 +203,9 @@ class YellowstoneClient:
                             logger.error(f"Error processing transaction: {e}")
                             if on_error:
                                 await on_error(e)
+
+                    elif response.HasField("pong"):
+                        logger.debug(f"Received pong: {response.pong.id}")
 
                     # Reset reconnect delay on successful message
                     self._reconnect_delay = 1.0
