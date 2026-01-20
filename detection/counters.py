@@ -171,7 +171,7 @@ class CounterManager:
         """Get 5-minute stats for all active mints."""
         results = {}
 
-        for mint in self._active_mints:
+        for mint in list(self._active_mints):
             try:
                 stats = await self.get_stats(mint, 300)
                 results[mint] = stats
@@ -185,7 +185,7 @@ class CounterManager:
         # Get mints with zero recent activity
         inactive = []
 
-        for mint in self._active_mints:
+        for mint in list(self._active_mints):
             stats = await self.get_stats(mint, max_age_seconds)
             if stats.buy_count == 0 and stats.sell_count == 0:
                 inactive.append(mint)
