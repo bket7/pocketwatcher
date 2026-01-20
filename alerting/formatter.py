@@ -222,6 +222,7 @@ class AlertFormatter:
         # Build embed
         embed = {
             "title": title,
+            "url": f"https://dexscreener.com/solana/{alert.mint}",  # Makes title clickable
             "description": description,
             "color": color,
             "fields": fields,

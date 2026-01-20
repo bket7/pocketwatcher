@@ -8,6 +8,7 @@ WEBHOOK_URL = "https://discordapp.com/api/webhooks/1463080427349606563/evMWpaQci
 sample_embed = {
     "embeds": [{
         "title": "\U0001F534 HIGH RISK - ShadowCat ($SCAT)",
+        "url": "https://dexscreener.com/solana/7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
         "description": "**Whale Concentration**\nTop buyers hold majority of volume",
         "color": 0xFF4400,
         "fields": [
