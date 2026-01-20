@@ -90,7 +90,7 @@ class AlertFormatter:
         activity_stats = (
             f"\U0001F4B0 **{alert.volume_sol_5m:.1f} SOL** volume\n"
             f"\U0001F6D2 **{alert.buy_count_5m}** buys from **{alert.unique_buyers_5m}** wallets\n"
-            f"\U0001F4CA **{alert.buy_sell_ratio_5m:.1f}x** buy/sell ratio"
+            f"\U0001F4CA **{AlertFormatter._format_ratio(alert.buy_sell_ratio_5m)}** buy/sell ratio"
         )
         fields.append({
             "name": "\U0001F4CA 5-Minute Activity",
@@ -300,6 +300,18 @@ class AlertFormatter:
             f"Vol: {alert.volume_sol_5m:.1f} SOL | Buyers: {alert.unique_buyers_5m} | "
             f"CTO: {score}"
         )
+
+    @staticmethod
+    def _format_ratio(ratio: float) -> str:
+        """Format buy/sell ratio for display."""
+        if ratio == float('inf') or ratio > 1000:
+            return "ALL BUYS (no sells)"
+        elif ratio > 100:
+            return f"{ratio:.0f}x (almost no sells)"
+        elif ratio > 10:
+            return f"{ratio:.0f}x"
+        else:
+            return f"{ratio:.1f}x"
 
     @staticmethod
     def _get_risk_level(score: Optional[CTOScore]) -> str:
