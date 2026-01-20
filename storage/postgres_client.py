@@ -157,6 +157,12 @@ class PostgresClient:
             await conn.execute("""
                 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS token_supply BIGINT;
             """)
+            await conn.execute("""
+                ALTER TABLE alerts ADD COLUMN IF NOT EXISTS venue VARCHAR(50);
+            """)
+            await conn.execute("""
+                ALTER TABLE alerts ADD COLUMN IF NOT EXISTS token_image TEXT;
+            """)
 
             # Add mcap_at_swap column to swap_events table (migration)
             await conn.execute("""
@@ -463,8 +469,8 @@ class PostgresClient:
                     mint, token_name, token_symbol, trigger_name, trigger_reason,
                     buy_count_5m, unique_buyers_5m, volume_sol_5m, buy_sell_ratio_5m,
                     top_buyers, cluster_summary, enrichment_degraded,
-                    price_sol, mcap_sol, token_supply
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                    price_sol, mcap_sol, token_supply, venue, token_image
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
                 RETURNING id, created_at
             """,
                 alert.mint,
@@ -482,6 +488,8 @@ class PostgresClient:
                 alert.price_sol,
                 alert.mcap_sol,
                 alert.token_supply,
+                alert.venue,
+                alert.token_image,
             )
             return row["id"]
 
@@ -529,6 +537,8 @@ class PostgresClient:
                     price_sol=row["price_sol"],
                     mcap_sol=row["mcap_sol"],
                     token_supply=row["token_supply"],
+                    venue=row.get("venue"),
+                    token_image=row.get("token_image"),
                 )
                 for row in rows
             ]

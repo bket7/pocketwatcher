@@ -410,13 +410,12 @@ class TransactionProcessor:
             token_symbol = token_profile.symbol if token_profile else None
             token_image = None
 
-            # If no metadata, try DexScreener
-            if not token_name or not token_symbol:
-                dex_meta = await self.helius.get_token_metadata_dexscreener(mint)
-                if dex_meta:
-                    token_name = dex_meta.get("name") or token_name
-                    token_symbol = dex_meta.get("symbol") or token_symbol
-                    token_image = dex_meta.get("image")
+            # Always try DexScreener for image, plus name/symbol if missing
+            dex_meta = await self.helius.get_token_metadata_dexscreener(mint)
+            if dex_meta:
+                token_name = token_name or dex_meta.get("name")
+                token_symbol = token_symbol or dex_meta.get("symbol")
+                token_image = dex_meta.get("image")
 
             # Get dominant venue
             venue = await self.postgres.get_dominant_venue(mint)
