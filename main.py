@@ -366,10 +366,17 @@ class Application:
                 await asyncio.sleep(1)  # Evaluate every second
 
                 # Get all active mints and evaluate triggers
-                results = await self.processor.trigger_evaluator.evaluate_all_active()
+                active_mints = await self.processor.counter_manager.get_active_mints()
 
-                for result in results:
-                    logger.info(f"Trigger fired: {result.trigger_name} for mint")
+                for mint in active_mints:
+                    # Skip if already HOT
+                    if await self.processor.state_manager.is_hot(mint):
+                        continue
+
+                    result = await self.processor.trigger_evaluator.evaluate(mint)
+                    if result and result.triggered:
+                        logger.info(f"Trigger fired: {result.trigger_name} for {mint[:8]}")
+                        await self.processor._handle_trigger_result(mint, result)
 
             except asyncio.CancelledError:
                 break

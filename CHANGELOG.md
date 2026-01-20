@@ -9,11 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Market cap tracking at alert time**: Alerts now capture price_sol, mcap_sol, and token_supply at the moment they fire
-  - Price calculated from recent swap data (weighted average of buys)
   - Token supply fetched via Helius getAccountInfo (1 credit per call)
+  - Price calculated from postgres swaps if available (may be NULL at alert time due to async backfill)
   - Database schema updated with new columns
 - **Daily report script**: `scripts/daily_report.py` generates performance reports comparing alert-time values with current prices
 - **GMGN client**: `scripts/gmgn_client.py` for fetching current token prices from GMGN (adapted from sauron)
+
+### Fixed
+- **Detection loop not creating alerts**: Fixed main.py detection loop to call `_handle_trigger_result` instead of just logging trigger results
+- **Price calculation blocking**: Replaced slow delta_log scanning with fast rolling counter + postgres query with 2s timeout
 
 ## [0.1.2] - 2026-01-20
 

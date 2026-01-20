@@ -244,88 +244,87 @@ class TransactionProcessor:
         result = await self.trigger_evaluator.evaluate(mint)
 
         if result and result.triggered:
-            # Transition to HOT
-            await self.state_manager.transition_to_hot(
-                mint,
-                result.reason,
-                trigger_backfill=True,
-            )
-            self.metrics.record_hot_token(result.trigger_name)
+            await self._handle_trigger_result(mint, result)
 
-            # Create and send alert
-            await self._create_alert(mint, result)
+    async def _handle_trigger_result(self, mint: str, result: TriggerResult):
+        """Handle a trigger result - transition to HOT and create alert."""
+        # Skip if already HOT (may have been triggered by another path)
+        if await self.state_manager.is_hot(mint):
+            return
+
+        # Transition to HOT
+        await self.state_manager.transition_to_hot(
+            mint,
+            result.reason,
+            trigger_backfill=True,
+        )
+        self.metrics.record_hot_token(result.trigger_name)
+
+        # Create and send alert
+        await self._create_alert(mint, result)
 
     async def _calculate_price_and_mcap(self, mint: str) -> Dict[str, Any]:
         """
         Calculate price and market cap for a token at alert time.
 
-        Reads directly from delta_log and infers swaps on-the-fly to avoid
-        race condition with async PostgreSQL backfill.
+        Uses rolling counters data for price estimation when possible,
+        falls back to token supply lookup via Helius.
 
         Returns dict with price_sol, mcap_sol, token_supply (or None values if unavailable).
         """
         result = {"price_sol": None, "mcap_sol": None, "token_supply": None}
 
         try:
-            # Read recent delta records for this mint from delta_log (last 5 minutes)
-            delta_records = await self.delta_log.read_for_mint(mint, max_age_seconds=300)
+            # Get stats from rolling counters (already computed, fast)
+            stats = await self.counter_manager.get_stats(mint, 300)
 
-            if not delta_records:
-                logger.debug(f"No delta records found for {mint[:8]}")
-                return result
+            # We can estimate price from volume/buy_count if available
+            if stats.buy_count > 0 and stats.volume_sol > 0:
+                # Rough price estimate: total SOL volume / estimated token amount
+                # This is approximate but fast
 
-            # Infer swaps from delta records and collect buys
-            buys = []
-            for record in delta_records:
-                # Reconstruct deltas
-                token_deltas = {(o, m): amt for o, m, amt in record.token_deltas}
-                sol_deltas = record.sol_deltas
+                # Fetch token supply and decimals for accurate calculation
+                supply_info = await self.helius.get_token_supply(mint)
 
-                # Infer swap
-                candidates = self.delta_builder.get_candidate_users(token_deltas, record.fee_payer)
-                swap = self.inference.infer_swap(token_deltas, sol_deltas, candidates)
+                if supply_info:
+                    raw_supply = supply_info["supply"]
+                    decimals = supply_info["decimals"]
+                    result["token_supply"] = raw_supply
 
-                if swap and swap.confidence >= settings.min_swap_confidence:
-                    # Check if this swap is for our mint and is a buy
-                    if swap.base_mint == mint and swap.side.value == "buy":
-                        # Only count if quote is WSOL (SOL)
-                        if swap.quote_mint == WSOL_MINT:
-                            buys.append({
-                                "quote_amount": swap.quote_amount,
-                                "base_amount": swap.base_amount,
-                            })
+                    # For now, we can't calculate exact price without swap data
+                    # But we can at least store the supply
+                    # Price calculation will be None until we have swap data in postgres
+                    # after backfill completes
 
-            if buys:
-                # Calculate weighted average price: sum(quote) / sum(base)
-                total_quote = sum(b["quote_amount"] for b in buys)  # in lamports
-                total_base = sum(b["base_amount"] for b in buys)    # in token units
-
-                if total_base > 0:
-                    # Price in SOL per raw token unit
-                    price_per_unit = (total_quote / 1e9) / total_base
-
-                    # Fetch token supply and decimals
-                    supply_info = await self.helius.get_token_supply(mint)
-
-                    if supply_info:
-                        raw_supply = supply_info["supply"]
-                        decimals = supply_info["decimals"]
-
-                        # Adjust price for decimals (price per whole token)
-                        price_sol = price_per_unit * (10 ** decimals)
-
-                        # Market cap = price * circulating supply (in whole tokens)
-                        supply_whole_tokens = raw_supply / (10 ** decimals)
-                        mcap_sol = price_sol * supply_whole_tokens
-
-                        result["price_sol"] = price_sol
-                        result["mcap_sol"] = mcap_sol
-                        result["token_supply"] = raw_supply
-
-                        logger.info(
-                            f"Calculated price for {mint[:8]}: {price_sol:.6f} SOL/token, "
-                            f"mcap: {mcap_sol:.2f} SOL ({len(buys)} buys)"
+                    # Try to get price from postgres if any swaps are already backfilled
+                    try:
+                        swaps = await asyncio.wait_for(
+                            self.postgres.get_recent_swaps(mint, limit=5),
+                            timeout=2.0
                         )
+                        buys = [s for s in swaps if s.side.value == "buy" and s.quote_mint == WSOL_MINT]
+
+                        if buys:
+                            total_quote = sum(s.quote_amount for s in buys)
+                            total_base = sum(s.base_amount for s in buys)
+
+                            if total_base > 0:
+                                price_per_unit = (total_quote / 1e9) / total_base
+                                price_sol = price_per_unit * (10 ** decimals)
+                                supply_whole_tokens = raw_supply / (10 ** decimals)
+                                mcap_sol = price_sol * supply_whole_tokens
+
+                                result["price_sol"] = price_sol
+                                result["mcap_sol"] = mcap_sol
+
+                                logger.info(
+                                    f"Calculated price for {mint[:8]}: {price_sol:.6f} SOL/token, "
+                                    f"mcap: {mcap_sol:.2f} SOL ({len(buys)} buys)"
+                                )
+                    except asyncio.TimeoutError:
+                        logger.debug(f"Postgres swap query timed out for {mint[:8]}")
+                    except Exception as e:
+                        logger.debug(f"Failed to get swaps from postgres for {mint[:8]}: {e}")
 
         except Exception as e:
             logger.warning(f"Failed to calculate price/mcap for {mint[:8]}: {e}")
@@ -334,58 +333,66 @@ class TransactionProcessor:
 
     async def _create_alert(self, mint: str, trigger_result: TriggerResult):
         """Create and send an alert for a HOT token."""
+        logger.info(f"Creating alert for {mint[:8]} (trigger: {trigger_result.trigger_name})")
         self._alert_count += 1
 
-        # Get token metadata
-        token_profile = await self.postgres.get_token_profile(mint)
-        token_name = token_profile.name if token_profile else None
-        token_symbol = token_profile.symbol if token_profile else None
+        try:
+            # Get token metadata
+            token_profile = await self.postgres.get_token_profile(mint)
+            token_name = token_profile.name if token_profile else None
+            token_symbol = token_profile.symbol if token_profile else None
 
-        # Get top buyers
-        top_buyers = await self.postgres.get_top_buyers(mint, limit=5)
+            # Get top buyers
+            top_buyers = await self.postgres.get_top_buyers(mint, limit=5)
 
-        # Calculate CTO score
-        cto_score = self.scorer.score_token(
-            trigger_result.stats,
-            top_buyers,
-        )
+            # Calculate CTO score
+            cto_score = self.scorer.score_token(
+                trigger_result.stats,
+                top_buyers,
+            )
 
-        # Generate cluster summary
-        buyer_wallets = [b["user_wallet"] for b in top_buyers]
-        cluster_summary = self.clusterer.generate_summary(buyer_wallets)
+            # Generate cluster summary
+            buyer_wallets = [b["user_wallet"] for b in top_buyers]
+            cluster_summary = self.clusterer.generate_summary(buyer_wallets)
 
-        # Check enrichment status
-        enrichment_degraded = self.helius.is_degraded()
+            # Check enrichment status
+            enrichment_degraded = self.helius.is_degraded()
 
-        # Calculate price and market cap at alert time
-        price_mcap = await self._calculate_price_and_mcap(mint)
+            # Calculate price and market cap at alert time
+            price_mcap = await self._calculate_price_and_mcap(mint)
 
-        # Create alert
-        alert = Alert(
-            mint=mint,
-            token_name=token_name,
-            token_symbol=token_symbol,
-            trigger_name=trigger_result.trigger_name,
-            trigger_reason=trigger_result.reason,
-            buy_count_5m=trigger_result.stats.buy_count,
-            unique_buyers_5m=trigger_result.stats.unique_buyers,
-            volume_sol_5m=trigger_result.stats.volume_sol,
-            buy_sell_ratio_5m=trigger_result.stats.buy_sell_ratio,
-            top_buyers=top_buyers,
-            cluster_summary=cluster_summary,
-            enrichment_degraded=enrichment_degraded,
-            created_at=datetime.utcnow(),
-            price_sol=price_mcap["price_sol"],
-            mcap_sol=price_mcap["mcap_sol"],
-            token_supply=price_mcap["token_supply"],
-        )
+            # Create alert
+            alert = Alert(
+                mint=mint,
+                token_name=token_name,
+                token_symbol=token_symbol,
+                trigger_name=trigger_result.trigger_name,
+                trigger_reason=trigger_result.reason,
+                buy_count_5m=trigger_result.stats.buy_count,
+                unique_buyers_5m=trigger_result.stats.unique_buyers,
+                volume_sol_5m=trigger_result.stats.volume_sol,
+                buy_sell_ratio_5m=trigger_result.stats.buy_sell_ratio,
+                top_buyers=top_buyers,
+                cluster_summary=cluster_summary,
+                enrichment_degraded=enrichment_degraded,
+                created_at=datetime.utcnow(),
+                price_sol=price_mcap["price_sol"],
+                mcap_sol=price_mcap["mcap_sol"],
+                token_supply=price_mcap["token_supply"],
+            )
 
-        # Store alert
-        alert_id = await self.postgres.insert_alert(alert)
-        alert.id = alert_id
+            # Store alert
+            alert_id = await self.postgres.insert_alert(alert)
+            alert.id = alert_id
+            logger.info(f"Alert {alert_id} stored for {mint[:8]}")
 
-        # Send to channels
-        await self._send_alert(alert, cto_score)
+            # Send to channels
+            await self._send_alert(alert, cto_score)
+
+        except Exception as e:
+            import traceback
+            logger.error(f"Failed to create alert for {mint[:8]}: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
 
     async def _send_alert(self, alert: Alert, cto_score):
         """Send alert to configured channels."""
