@@ -259,19 +259,46 @@ class TransactionProcessor:
         """
         Calculate price and market cap for a token at alert time.
 
+        Reads directly from delta_log and infers swaps on-the-fly to avoid
+        race condition with async PostgreSQL backfill.
+
         Returns dict with price_sol, mcap_sol, token_supply (or None values if unavailable).
         """
         result = {"price_sol": None, "mcap_sol": None, "token_supply": None}
 
         try:
-            # Get recent swaps (buys only for price calculation)
-            swaps = await self.postgres.get_recent_swaps(mint, limit=20)
-            buys = [s for s in swaps if s.side.value == "buy"]
+            # Read recent delta records for this mint from delta_log (last 5 minutes)
+            delta_records = await self.delta_log.read_for_mint(mint, max_age_seconds=300)
+
+            if not delta_records:
+                logger.debug(f"No delta records found for {mint[:8]}")
+                return result
+
+            # Infer swaps from delta records and collect buys
+            buys = []
+            for record in delta_records:
+                # Reconstruct deltas
+                token_deltas = {(o, m): amt for o, m, amt in record.token_deltas}
+                sol_deltas = record.sol_deltas
+
+                # Infer swap
+                candidates = self.delta_builder.get_candidate_users(token_deltas, record.fee_payer)
+                swap = self.inference.infer_swap(token_deltas, sol_deltas, candidates)
+
+                if swap and swap.confidence >= settings.min_swap_confidence:
+                    # Check if this swap is for our mint and is a buy
+                    if swap.base_mint == mint and swap.side.value == "buy":
+                        # Only count if quote is WSOL (SOL)
+                        if swap.quote_mint == WSOL_MINT:
+                            buys.append({
+                                "quote_amount": swap.quote_amount,
+                                "base_amount": swap.base_amount,
+                            })
 
             if buys:
                 # Calculate weighted average price: sum(quote) / sum(base)
-                total_quote = sum(s.quote_amount for s in buys)  # in lamports
-                total_base = sum(s.base_amount for s in buys)    # in token units
+                total_quote = sum(b["quote_amount"] for b in buys)  # in lamports
+                total_base = sum(b["base_amount"] for b in buys)    # in token units
 
                 if total_base > 0:
                     # Price in SOL per raw token unit
@@ -294,6 +321,11 @@ class TransactionProcessor:
                         result["price_sol"] = price_sol
                         result["mcap_sol"] = mcap_sol
                         result["token_supply"] = raw_supply
+
+                        logger.info(
+                            f"Calculated price for {mint[:8]}: {price_sol:.6f} SOL/token, "
+                            f"mcap: {mcap_sol:.2f} SOL ({len(buys)} buys)"
+                        )
 
         except Exception as e:
             logger.warning(f"Failed to calculate price/mcap for {mint[:8]}: {e}")
