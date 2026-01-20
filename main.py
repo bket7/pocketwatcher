@@ -8,7 +8,7 @@ import asyncio
 import logging
 import signal
 import sys
-from typing import Optional
+from typing import Optional, Union
 
 from config.settings import settings
 from storage.redis_client import RedisClient
@@ -16,7 +16,7 @@ from storage.postgres_client import PostgresClient
 from storage.delta_log import DeltaLog
 from storage.event_log import EventLog
 from stream.yellowstone import YellowstoneClient, MockYellowstoneClient
-from stream.consumer import StreamConsumer
+from stream.consumer import StreamConsumer, MultiConsumer
 from stream.dedup import DedupFilter
 from parser.alt_cache import ALTCache
 from enrichment.helius import HeliusClient
@@ -51,7 +51,7 @@ class Application:
         self.delta_log: Optional[DeltaLog] = None
         self.event_log: Optional[EventLog] = None
         self.yellowstone: Optional[YellowstoneClient] = None
-        self.consumer: Optional[StreamConsumer] = None
+        self.consumer: Optional[Union[StreamConsumer, MultiConsumer]] = None
         self.dedup: Optional[DedupFilter] = None
         self.alt_cache: Optional[ALTCache] = None
         self.helius: Optional[HeliusClient] = None
@@ -132,10 +132,23 @@ class Application:
         await self.processor.initialize()
 
         # Initialize consumer
-        self.consumer = StreamConsumer(self.redis)
+        consumer_count = max(1, settings.stream_consumer_count)
+        if consumer_count > 1:
+            self.consumer = MultiConsumer(
+                self.redis,
+                num_consumers=consumer_count,
+                batch_size=settings.stream_consumer_batch_size,
+                block_ms=settings.stream_consumer_block_ms,
+            )
+        else:
+            self.consumer = StreamConsumer(
+                self.redis,
+                batch_size=settings.stream_consumer_batch_size,
+                block_ms=settings.stream_consumer_block_ms,
+            )
 
         # Initialize health checker
-        self.health_checker = HealthChecker(self.metrics)
+        self.health_checker = HealthChecker(self.metrics, redis_client=self.redis)
 
         self._running = True
         logger.info("Pocketwatcher started successfully!")
@@ -166,7 +179,9 @@ class Application:
             await self.yellowstone.disconnect()
 
         if self.consumer:
-            self.consumer.stop()
+            stop_result = self.consumer.stop()
+            if asyncio.iscoroutine(stop_result):
+                await stop_result
 
         if self.delta_log:
             await self.delta_log.stop()
@@ -337,6 +352,8 @@ class Application:
                 on_message=on_message,
                 on_error=on_error,
             )
+            if isinstance(self.consumer, MultiConsumer):
+                await self._shutdown_event.wait()
         except asyncio.CancelledError:
             logger.info("Consumer task cancelled")
 

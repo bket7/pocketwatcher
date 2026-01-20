@@ -27,6 +27,18 @@ class Settings(BaseSettings):
         default=100000,
         description="Max messages in Redis stream buffer"
     )
+    stream_consumer_count: int = Field(
+        default=1,
+        description="Number of Redis stream consumers"
+    )
+    stream_consumer_batch_size: int = Field(
+        default=100,
+        description="Batch size per stream consumer read"
+    )
+    stream_consumer_block_ms: int = Field(
+        default=1000,
+        description="Blocking read timeout in milliseconds"
+    )
 
     # PostgreSQL
     postgres_url: str = Field(

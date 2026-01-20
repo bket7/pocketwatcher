@@ -6,6 +6,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from storage.redis_client import RedisClient
+
 logger = logging.getLogger(__name__)
 
 
@@ -181,12 +183,16 @@ class MetricsCollector:
             },
         }
 
+    def _sum_counters(self, name: str) -> int:
+        """Sum counters with the same base name across all label sets."""
+        return sum(counter.value for counter in self._counters.values() if counter.name == name)
+
     def get_summary(self) -> Dict[str, Any]:
         """Get a summary of key metrics."""
-        tx_counter = self._counters.get("tx_processed_total", Counter("tx_processed_total"))
-        swap_counter = self._counters.get("swaps_detected_total", Counter("swaps_detected_total"))
-        hot_counter = self._counters.get("hot_tokens_total", Counter("hot_tokens_total"))
-        alert_counter = self._counters.get("alerts_sent_total", Counter("alerts_sent_total"))
+        tx_total = self._sum_counters("tx_processed_total")
+        swap_total = self._sum_counters("swaps_detected_total")
+        hot_total = self._sum_counters("hot_tokens_total")
+        alert_total = self._sum_counters("alerts_sent_total")
 
         stream_gauge = self._gauges.get("stream_length", Gauge("stream_length"))
         lag_gauge = self._gauges.get("processing_lag_seconds", Gauge("processing_lag_seconds"))
@@ -197,11 +203,11 @@ class MetricsCollector:
         return {
             "uptime_seconds": uptime,
             "uptime_human": self._format_duration(uptime),
-            "transactions_processed": tx_counter.value,
-            "tx_per_second": tx_counter.value / uptime if uptime > 0 else 0,
-            "swaps_detected": swap_counter.value,
-            "hot_triggers": hot_counter.value,
-            "alerts_sent": alert_counter.value,
+            "transactions_processed": tx_total,
+            "tx_per_second": tx_total / uptime if uptime > 0 else 0,
+            "swaps_detected": swap_total,
+            "hot_triggers": hot_total,
+            "alerts_sent": alert_total,
             "stream_length": int(stream_gauge.value),
             "processing_lag_seconds": lag_gauge.value,
             "hot_tokens_current": int(hot_gauge.value),
@@ -234,9 +240,11 @@ class HealthChecker:
     def __init__(
         self,
         metrics_collector: MetricsCollector,
+        redis_client: Optional[RedisClient] = None,
         check_interval: float = 10.0,
     ):
         self.metrics = metrics_collector
+        self.redis = redis_client
         self.check_interval = check_interval
         self._is_healthy = True
         self._last_check = 0.0
@@ -245,6 +253,13 @@ class HealthChecker:
     async def check_health(self) -> Dict[str, Any]:
         """Run health checks and return status."""
         self._health_issues = []
+
+        if self.redis:
+            try:
+                stream_length = await self.redis.get_stream_length()
+                self.metrics.set_stream_length(stream_length)
+            except Exception as e:
+                logger.error(f"Health check stream length error: {e}")
 
         summary = self.metrics.get_summary()
 

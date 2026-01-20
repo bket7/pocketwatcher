@@ -5,6 +5,16 @@ All notable changes to Pocketwatcher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-01-20
+
+### Fixed
+- **Swap metrics not counting**: Fixed metrics summary to sum counters across all label sets - swaps_detected now reflects real activity instead of 0
+- **Stale health checks**: Backpressure updates now write processing lag + stream length into gauges per tx, health checker refreshes stream length from Redis
+- **Duplicate swap processing**: Swap processing now called once per inferred swap (not once per mint touched), fixing inflated counters and trigger noise
+
+### Added
+- **Multi-consumer support**: Configurable STREAM_CONSUMER_COUNT to scale throughput and reduce backlog growth
+
 ## [0.1.1] - 2026-01-20
 
 ### Fixed

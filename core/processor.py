@@ -114,7 +114,10 @@ class TransactionProcessor:
             fee_payer = account_keys[0] if account_keys else ""
 
         # Update backpressure
-        mode = await self.backpressure.update(block_time)
+        await self.backpressure.update(block_time)
+        bp_stats = self.backpressure.get_stats()
+        self.metrics.set_processing_lag(bp_stats["processing_lag_seconds"])
+        self.metrics.set_stream_length(bp_stats["stream_length"])
 
         # Build deltas
         token_deltas, sol_deltas = self.delta_builder.build_deltas(tx_data)
@@ -165,15 +168,14 @@ class TransactionProcessor:
                 self.metrics.record_swap_detected(swap.side.value, venue)
 
                 # Update state and counters
-                for mint in mints_touched:
-                    await self._process_detected_swap(
-                        mint=swap.base_mint,
-                        swap=swap,
-                        signature=signature,
-                        slot=slot,
-                        block_time=block_time,
-                        venue=venue,
-                    )
+                await self._process_detected_swap(
+                    mint=swap.base_mint,
+                    swap=swap,
+                    signature=signature,
+                    slot=slot,
+                    block_time=block_time,
+                    venue=venue,
+                )
 
         # Record processing time
         elapsed = time.time() - start_time
