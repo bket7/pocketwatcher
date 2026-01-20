@@ -174,31 +174,57 @@ class AlertFormatter:
                 "inline": False,
             })
 
-        # Top Buyers with wallet links
+        # Top Buyers with wallet links and avg entry mcap
         if alert.top_buyers:
             buyer_lines = []
             total_top_volume = 0
+            total_avg_entry_mcap = 0
+            valid_mcap_count = 0
 
             for i, buyer in enumerate(alert.top_buyers[:5]):
                 wallet = buyer.get("user_wallet", buyer.get("wallet", ""))
                 wallet_short = wallet[:6] + "..." + wallet[-4:] if len(wallet) > 12 else wallet
 
                 volume = buyer.get("total_quote", buyer.get("volume", 0))
+                avg_entry_mcap = buyer.get("avg_entry_mcap")
+
                 if isinstance(volume, (int, float)):
                     volume_sol = volume / 1e9 if volume > 1e6 else volume
                     total_top_volume += volume_sol
 
+                    # Track avg entry mcap for overall average
+                    if avg_entry_mcap is not None and avg_entry_mcap > 0:
+                        total_avg_entry_mcap += avg_entry_mcap
+                        valid_mcap_count += 1
+
                     # Medal for top 3
                     medal = ["\U0001F947", "\U0001F948", "\U0001F949", "", ""][i]
-                    buyer_lines.append(
-                        f"{medal} [`{wallet_short}`](https://solscan.io/account/{wallet}) - **{volume_sol:.2f}** SOL"
-                    )
+
+                    # Format entry mcap if available
+                    if avg_entry_mcap is not None and avg_entry_mcap > 0:
+                        mcap_display = AlertFormatter._format_mcap(avg_entry_mcap)
+                        buyer_lines.append(
+                            f"{medal} [`{wallet_short}`](https://solscan.io/account/{wallet}) - **{volume_sol:.2f}** SOL @ {mcap_display}"
+                        )
+                    else:
+                        buyer_lines.append(
+                            f"{medal} [`{wallet_short}`](https://solscan.io/account/{wallet}) - **{volume_sol:.2f}** SOL"
+                        )
 
             if buyer_lines:
-                # Calculate concentration
+                # Calculate concentration and avg entry
+                header_parts = []
                 if alert.volume_sol_5m > 0:
                     concentration = (total_top_volume / alert.volume_sol_5m) * 100
-                    header = f"\U0001F465 Top Buyers ({concentration:.0f}% of volume)"
+                    header_parts.append(f"{concentration:.0f}% of volume")
+
+                if valid_mcap_count > 0:
+                    overall_avg_mcap = total_avg_entry_mcap / valid_mcap_count
+                    avg_mcap_display = AlertFormatter._format_mcap(overall_avg_mcap)
+                    header_parts.append(f"avg entry @ {avg_mcap_display}")
+
+                if header_parts:
+                    header = f"\U0001F465 Top Buyers ({', '.join(header_parts)})"
                 else:
                     header = "\U0001F465 Top Buyers"
 

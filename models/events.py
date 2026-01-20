@@ -140,6 +140,9 @@ class SwapEventFull:
     confidence: float
     route_depth: int = 1
 
+    # Market cap at swap time (SOL)
+    mcap_at_swap: Optional[float] = None
+
     def to_dict(self) -> dict:
         """Convert to dictionary for database storage."""
         return {
@@ -155,6 +158,7 @@ class SwapEventFull:
             "quote_amount": self.quote_amount,
             "confidence": self.confidence,
             "route_depth": self.route_depth,
+            "mcap_at_swap": self.mcap_at_swap,
         }
 
     @classmethod
@@ -173,6 +177,7 @@ class SwapEventFull:
             quote_amount=d["quote_amount"],
             confidence=d["confidence"],
             route_depth=d.get("route_depth", 1),
+            mcap_at_swap=d.get("mcap_at_swap"),
         )
 
     def to_msgpack(self) -> bytes:

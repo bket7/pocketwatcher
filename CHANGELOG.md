@@ -5,6 +5,17 @@ All notable changes to Pocketwatcher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-01-20
+
+### Added
+- **Market cap tracking at swap time**: Each swap event now records the market cap at the time of the swap
+  - New `mcap_at_swap` column in swap_events table
+  - Calculated from swap price × token supply for accurate historical tracking
+- **Average entry mcap for top buyers**: Discord alerts now show average accumulation market cap for each top buyer
+  - Displays per-buyer entry price: "Wallet - 1.5 SOL @ 50K SOL"
+  - Shows overall average entry in header: "Top Buyers (85% of volume, avg entry @ 45K SOL)"
+- **Alert format improvements**: Ticker + metadata shown first, risk communicated via color/emoji only
+
 ## [0.1.3] - 2026-01-20
 
 ### Added

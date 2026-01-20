@@ -89,6 +89,9 @@ class TransactionProcessor:
         self._alert_count = 0
         self._unknown_programs: Dict[str, int] = {}
 
+        # Cache for token supply (mint -> {supply, decimals})
+        self._token_supply_cache: Dict[str, Dict[str, Any]] = {}
+
     async def initialize(self):
         """Initialize all components."""
         await self.trigger_evaluator.load_config()
@@ -217,6 +220,15 @@ class TransactionProcessor:
 
         # Store full swap event if token is HOT
         if await self.state_manager.is_hot(mint):
+            # Calculate mcap at swap time
+            supply_info = await self._get_token_supply(mint)
+            mcap_at_swap = self._calculate_mcap_at_swap(
+                swap.quote_amount,
+                swap.base_amount,
+                swap.quote_mint,
+                supply_info,
+            )
+
             swap_event = SwapEventFull(
                 signature=signature,
                 slot=slot,
@@ -229,6 +241,7 @@ class TransactionProcessor:
                 quote_mint=swap.quote_mint,
                 quote_amount=swap.quote_amount,
                 confidence=swap.confidence,
+                mcap_at_swap=mcap_at_swap,
             )
             await self.postgres.insert_swap_event(swap_event)
 
@@ -262,6 +275,60 @@ class TransactionProcessor:
 
         # Create and send alert
         await self._create_alert(mint, result)
+
+    async def _get_token_supply(self, mint: str) -> Optional[Dict[str, Any]]:
+        """Get cached or fetch token supply info."""
+        if mint in self._token_supply_cache:
+            return self._token_supply_cache[mint]
+
+        try:
+            supply_info = await self.helius.get_token_supply(mint)
+            if supply_info:
+                self._token_supply_cache[mint] = supply_info
+                return supply_info
+        except Exception as e:
+            logger.debug(f"Failed to get token supply for {mint[:8]}: {e}")
+
+        return None
+
+    def _calculate_mcap_at_swap(
+        self,
+        quote_amount: int,
+        base_amount: int,
+        quote_mint: str,
+        supply_info: Optional[Dict[str, Any]],
+    ) -> Optional[float]:
+        """
+        Calculate market cap at swap time from swap price and token supply.
+
+        Returns mcap in SOL, or None if calculation not possible.
+        """
+        if not supply_info or quote_mint != WSOL_MINT:
+            return None
+
+        if base_amount <= 0:
+            return None
+
+        try:
+            raw_supply = supply_info["supply"]
+            decimals = supply_info["decimals"]
+
+            # Price per base unit in SOL
+            price_per_unit = (quote_amount / 1e9) / base_amount
+
+            # Price per whole token in SOL
+            price_sol = price_per_unit * (10 ** decimals)
+
+            # Supply in whole tokens
+            supply_whole_tokens = raw_supply / (10 ** decimals)
+
+            # Market cap in SOL
+            mcap_sol = price_sol * supply_whole_tokens
+
+            return mcap_sol
+        except Exception as e:
+            logger.debug(f"Failed to calculate mcap at swap: {e}")
+            return None
 
     async def _calculate_price_and_mcap(self, mint: str) -> Dict[str, Any]:
         """
@@ -455,6 +522,15 @@ class TransactionProcessor:
         if swap and swap.confidence >= settings.min_swap_confidence:
             venue = self.inference.identify_venue(record.programs_invoked)
 
+            # Calculate mcap at swap time (supply should be cached from alert creation)
+            supply_info = await self._get_token_supply(swap.base_mint)
+            mcap_at_swap = self._calculate_mcap_at_swap(
+                swap.quote_amount,
+                swap.base_amount,
+                swap.quote_mint,
+                supply_info,
+            )
+
             swap_event = SwapEventFull(
                 signature=record.signature,
                 slot=record.slot,
@@ -467,6 +543,7 @@ class TransactionProcessor:
                 quote_mint=swap.quote_mint,
                 quote_amount=swap.quote_amount,
                 confidence=swap.confidence,
+                mcap_at_swap=mcap_at_swap,
             )
             await self.postgres.insert_swap_event(swap_event)
 

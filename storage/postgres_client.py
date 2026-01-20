@@ -158,6 +158,11 @@ class PostgresClient:
                 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS token_supply BIGINT;
             """)
 
+            # Add mcap_at_swap column to swap_events table (migration)
+            await conn.execute("""
+                ALTER TABLE swap_events ADD COLUMN IF NOT EXISTS mcap_at_swap DOUBLE PRECISION;
+            """)
+
             logger.info("Database tables created/verified")
 
     # ============== Token Profile Operations ==============
@@ -255,8 +260,8 @@ class PostgresClient:
                     INSERT INTO swap_events (
                         signature, slot, block_time, venue, user_wallet,
                         side, base_mint, base_amount, quote_mint, quote_amount,
-                        confidence, route_depth
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                        confidence, route_depth, mcap_at_swap
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                     ON CONFLICT (signature, base_mint) DO NOTHING
                 """,
                     event.signature,
@@ -271,6 +276,7 @@ class PostgresClient:
                     event.quote_amount,
                     event.confidence,
                     event.route_depth,
+                    event.mcap_at_swap,
                 )
             except Exception as e:
                 logger.error(f"Failed to insert swap event: {e}")
@@ -312,6 +318,7 @@ class PostgresClient:
                     quote_amount=row["quote_amount"],
                     confidence=row["confidence"],
                     route_depth=row["route_depth"],
+                    mcap_at_swap=row.get("mcap_at_swap"),
                 )
                 for row in rows
             ]
@@ -322,7 +329,7 @@ class PostgresClient:
         limit: int = 10,
         since_block_time: Optional[int] = None
     ) -> List[Dict[str, Any]]:
-        """Get top buyers for a token by volume."""
+        """Get top buyers for a token by volume, including avg entry mcap."""
         async with self.pool.acquire() as conn:
             if since_block_time:
                 rows = await conn.fetch("""
@@ -330,7 +337,8 @@ class PostgresClient:
                         user_wallet,
                         COUNT(*) as buy_count,
                         SUM(quote_amount) as total_quote,
-                        SUM(base_amount) as total_base
+                        SUM(base_amount) as total_base,
+                        AVG(mcap_at_swap) as avg_entry_mcap
                     FROM swap_events
                     WHERE base_mint = $1 AND side = 'buy' AND block_time >= $2
                     GROUP BY user_wallet
@@ -343,7 +351,8 @@ class PostgresClient:
                         user_wallet,
                         COUNT(*) as buy_count,
                         SUM(quote_amount) as total_quote,
-                        SUM(base_amount) as total_base
+                        SUM(base_amount) as total_base,
+                        AVG(mcap_at_swap) as avg_entry_mcap
                     FROM swap_events
                     WHERE base_mint = $1 AND side = 'buy'
                     GROUP BY user_wallet
