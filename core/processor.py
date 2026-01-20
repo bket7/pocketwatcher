@@ -404,10 +404,25 @@ class TransactionProcessor:
         self._alert_count += 1
 
         try:
-            # Get token metadata
+            # Get token metadata from profile first
             token_profile = await self.postgres.get_token_profile(mint)
             token_name = token_profile.name if token_profile else None
             token_symbol = token_profile.symbol if token_profile else None
+            token_image = None
+
+            # If no metadata, try DexScreener
+            if not token_name or not token_symbol:
+                dex_meta = await self.helius.get_token_metadata_dexscreener(mint)
+                if dex_meta:
+                    token_name = dex_meta.get("name") or token_name
+                    token_symbol = dex_meta.get("symbol") or token_symbol
+                    token_image = dex_meta.get("image")
+
+            # Get dominant venue
+            venue = await self.postgres.get_dominant_venue(mint)
+            # Detect pump.fun from mint address as fallback
+            if not venue and mint.endswith("pump"):
+                venue = "pump"
 
             # Get top buyers
             top_buyers = await self.postgres.get_top_buyers(mint, limit=5)
@@ -446,6 +461,8 @@ class TransactionProcessor:
                 price_sol=price_mcap["price_sol"],
                 mcap_sol=price_mcap["mcap_sol"],
                 token_supply=price_mcap["token_supply"],
+                venue=venue,
+                token_image=token_image,
             )
 
             # Store alert

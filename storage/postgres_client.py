@@ -362,6 +362,19 @@ class PostgresClient:
 
             return [dict(row) for row in rows]
 
+    async def get_dominant_venue(self, mint: str) -> Optional[str]:
+        """Get the most common trading venue for a token."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT venue, COUNT(*) as cnt
+                FROM swap_events
+                WHERE base_mint = $1 AND venue != 'unknown'
+                GROUP BY venue
+                ORDER BY cnt DESC
+                LIMIT 1
+            """, mint)
+            return row["venue"] if row else None
+
     # ============== Wallet Profile Operations ==============
 
     async def get_wallet_profile(self, address: str) -> Optional[WalletProfile]:

@@ -378,6 +378,33 @@ class HeliusClient:
 
         return None
 
+    async def get_token_metadata_dexscreener(self, mint: str) -> Optional[Dict[str, Any]]:
+        """
+        Get token metadata from DexScreener (free, no credits).
+
+        Returns dict with name, symbol, image.
+        """
+        try:
+            url = f"https://api.dexscreener.com/latest/dex/tokens/{mint}"
+            response = await self._http_client.get(url, timeout=5.0)
+            response.raise_for_status()
+            data = response.json()
+
+            pairs = data.get("pairs", [])
+            if pairs:
+                # Get info from first pair
+                pair = pairs[0]
+                base_token = pair.get("baseToken", {})
+                return {
+                    "name": base_token.get("name"),
+                    "symbol": base_token.get("symbol"),
+                    "image": pair.get("info", {}).get("imageUrl"),
+                }
+        except Exception as e:
+            logger.debug(f"DexScreener metadata fetch failed for {mint[:8]}: {e}")
+
+        return None
+
     def is_degraded(self) -> bool:
         """Check if enrichment is degraded due to budget."""
         return self.credit_bucket.is_degraded()

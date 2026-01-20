@@ -1,34 +1,50 @@
 # Detection Thresholds
-# Hot-reload: Same as programs - Redis config + pubsub
+# Edit this file to tune what triggers HOT token alerts
+# Hot-reload: Restart pocketwatcher to apply changes
 
 triggers:
   # --- 5-minute burst triggers (fast stealth) ---
+
+  # Few wallets buying aggressively
   - name: concentrated_accumulation
     conditions:
       - buy_count_5m >= 20
       - unique_buyers_5m <= 5
+      - buy_volume_sol_5m >= 5  # Min 5 SOL volume
 
+  # Many small buys (avoiding detection)
   - name: stealth_accumulation
     conditions:
-      - buy_volume_sol_5m > 10
+      - buy_volume_sol_5m >= 10  # Min 10 SOL volume
       - avg_buy_size_5m < 0.3
+      - buy_count_5m >= 15  # At least 15 buys
 
+  # Heavy buying, almost no selling
   - name: extreme_ratio
     conditions:
       - buy_sell_ratio_5m > 10
+      - buy_volume_sol_5m >= 3  # Min 3 SOL volume
+      - buy_count_5m >= 5  # At least 5 buys
 
+  # Suspicious new wallet activity
   - name: sybil_pattern
     conditions:
-      - new_wallet_pct_5m > 0.7  # "new" = first_seen_in_your_db
+      - new_wallet_pct_5m > 0.7
+      - buy_volume_sol_5m >= 5  # Min 5 SOL volume
+      - buy_count_5m >= 10  # At least 10 buys
 
+  # Top buyers hold majority - ONLY if significant volume
   - name: whale_concentration
     conditions:
-      - top_3_buyers_volume_share_5m >= 0.6
+      - top_3_buyers_volume_share_5m >= 0.8  # Raised from 0.6
+      - buy_volume_sol_5m >= 10  # Min 10 SOL volume
+      - buy_count_5m >= 10  # At least 10 buys
 
   # --- 1-hour slow stealth triggers ---
+
   - name: slow_stealth_accumulation
     conditions:
-      - buy_volume_sol_1h > 50
+      - buy_volume_sol_1h >= 50
       - unique_buyers_1h <= 10
       - avg_buy_size_1h < 1.0
 
@@ -36,8 +52,9 @@ triggers:
     conditions:
       - top_3_buyers_volume_share_1h >= 0.5
       - buy_count_1h >= 30
+      - buy_volume_sol_1h >= 20  # Min 20 SOL volume
 
   - name: gradual_accumulation
     conditions:
       - buy_sell_ratio_1h > 5
-      - buy_volume_sol_1h > 20
+      - buy_volume_sol_1h >= 20

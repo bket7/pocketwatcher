@@ -47,6 +47,16 @@ class AlertFormatter:
         "gradual_accumulation": "Steady buy pressure building",
     }
 
+    # Venue emojis and display names
+    VENUE_INFO = {
+        "pump": ("\U0001F4A7", "pump.fun"),  # droplet
+        "jupiter": ("\U0001F4AB", "Jupiter"),  # dizzy star
+        "raydium": ("\U00002728", "Raydium"),  # sparkles
+        "orca": ("\U0001F433", "Orca"),  # whale
+        "meteora": ("\U00002604", "Meteora"),  # comet
+        "unknown": ("\U00002753", "DEX"),  # question
+    }
+
     @staticmethod
     def format_discord_embed(
         alert: Alert,
@@ -54,7 +64,7 @@ class AlertFormatter:
     ) -> dict:
         """
         Format alert as a clean, scannable Discord embed.
-        Token first, risk indicated by color + emoji only.
+        Ticker first, risk indicated by color + emoji only.
         """
         # Determine risk level (for color only)
         risk_level = AlertFormatter._get_risk_level(cto_score) if cto_score else "MEDIUM"
@@ -70,21 +80,24 @@ class AlertFormatter:
         # Build title: emoji (risk color) + ticker
         title = f"{risk_emoji} {ticker}"
 
-        # Description: token metadata + market cap
+        # Description: token metadata + venue + market cap
         desc_lines = []
 
         # Token name if available
         if alert.token_name and alert.token_name != alert.token_symbol:
             desc_lines.append(f"**{alert.token_name}**")
 
+        # Venue badge (pump.fun, Jupiter, etc)
+        venue = alert.venue or "unknown"
+        venue_emoji, venue_name = AlertFormatter.VENUE_INFO.get(
+            venue, AlertFormatter.VENUE_INFO["unknown"]
+        )
+        desc_lines.append(f"{venue_emoji} {venue_name}")
+
         # Market cap at alert time
         if alert.mcap_sol is not None:
             mcap_display = AlertFormatter._format_mcap(alert.mcap_sol)
             desc_lines.append(f"\U0001F4B0 **{mcap_display}** mcap")
-        elif alert.token_supply is not None:
-            # Show supply if mcap not available
-            supply_b = alert.token_supply / 1e15  # Assume 6 decimals, show in billions
-            desc_lines.append(f"\U0001F4CA Supply: {supply_b:.1f}B tokens")
 
         # Trigger pattern (subtle)
         trigger_desc = AlertFormatter.TRIGGER_DESCRIPTIONS.get(
@@ -275,6 +288,10 @@ class AlertFormatter:
             },
             "timestamp": (alert.created_at or datetime.utcnow()).isoformat(),
         }
+
+        # Add token image as thumbnail if available
+        if alert.token_image:
+            embed["thumbnail"] = {"url": alert.token_image}
 
         return {"embeds": [embed]}
 

@@ -178,6 +178,10 @@ class Alert:
     mcap_sol: Optional[float] = None       # Market cap in SOL
     token_supply: Optional[int] = None     # Total supply (raw, not decimal-adjusted)
 
+    # Venue info
+    venue: Optional[str] = None            # Primary DEX (pump, jupiter, raydium, etc)
+    token_image: Optional[str] = None      # Token image URL
+
     # Timestamps
     created_at: Optional[datetime] = None
 
@@ -207,6 +211,8 @@ class Alert:
             "price_sol": self.price_sol,
             "mcap_sol": self.mcap_sol,
             "token_supply": self.token_supply,
+            "venue": self.venue,
+            "token_image": self.token_image,
         }
 
     @classmethod
@@ -232,4 +238,6 @@ class Alert:
             price_sol=d.get("price_sol"),
             mcap_sol=d.get("mcap_sol"),
             token_supply=d.get("token_supply"),
+            venue=d.get("venue"),
+            token_image=d.get("token_image"),
         )
