@@ -1,0 +1,31 @@
+# Program IDs (MVP Set)
+# Hot-reload: Store in Redis key `cfg:programs`, publish on `cfg:reload` channel
+
+programs:
+  # pump.fun
+  - id: "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+    name: pump_fun_bonding
+  - id: "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+    name: pump_fun_amm
+
+  # Jupiter v6 (uses ALTs + versioned txs)
+  - id: "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+    name: jupiter_v6
+
+  # Raydium (include v4 - still heavily used for older memes)
+  - id: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
+    name: raydium_amm_v4
+  - id: "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C"
+    name: raydium_cpmm
+  - id: "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK"
+    name: raydium_clmm
+  - id: "routeUGWgWzqBWFcrCfv8tritsqukccJPu3q5GPP3xS"
+    name: raydium_routing
+
+  # Orca
+  - id: "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc"
+    name: orca_whirlpools
+
+  # Meteora
+  - id: "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo"
+    name: meteora_dlmm

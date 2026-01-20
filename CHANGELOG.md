@@ -1,0 +1,53 @@
+# Changelog
+
+All notable changes to Pocketwatcher will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.1.0] - 2025-01-20
+
+### Added
+- Initial implementation of Pocketwatcher MVP v0
+- **Stream Module**: Yellowstone gRPC client for live transaction streaming
+  - Redis Streams buffer for crash-safe ingestion
+  - Signature deduplication with SET NX EX
+  - Program filter for MVP program set (pump.fun, Jupiter v6, Raydium, Orca, Meteora)
+- **Parser Module**: Balance delta extraction and swap inference
+  - Pre/post token balance delta calculation
+  - SOL/WSOL/fee/rent handling
+  - Swap inference with confidence scoring (target: 70-90% detection rate)
+  - ALT (Address Lookup Table) cache for Jupiter v6 transactions
+- **Detection Module**: Rolling counters and trigger evaluation
+  - Redis bucketed counters for 5m and 1h windows
+  - HyperLogLog for unique buyer/seller tracking
+  - Configurable trigger thresholds (concentration, stealth, sybil, whale patterns)
+  - HOT/WARM/COLD token state machine
+- **Enrichment Module**: Wallet analysis and clustering
+  - Helius API client with daily credit budget management
+  - Wallet funding trace (1-2 hops)
+  - Union-find wallet clustering
+  - CTO (Cabal/Team/Organization) likelihood scoring
+- **Alerting Module**: Discord and Telegram notifications
+  - Rich Discord embeds with token stats and evidence
+  - Telegram markdown messages with links
+  - Rate limiting and retry logic
+- **Storage**: Redis + PostgreSQL + local logs
+  - Redis Streams for ingest buffer
+  - Redis for rolling counters and HOT token tracking
+  - PostgreSQL for token profiles, swap events, alerts
+  - Append-only logs for MintTouchedEvent (permanent) and TxDeltaRecord (60 min retention)
+- **Backpressure Management**: Graceful degradation under load
+  - NORMAL/DEGRADED/CRITICAL modes based on lag and queue depth
+  - Automatic mode transitions with logging
+- **Monitoring**: Metrics collection and health checking
+  - Counters, gauges, and histograms
+  - Periodic health checks with issue detection
+- Configuration via environment variables and YAML files
+- Mock stream client for testing without Yellowstone connection
+
+### Technical Details
+- Python 3.10+ required
+- Async-first architecture with asyncio
+- gRPC for Yellowstone streaming
+- msgpack + zlib for efficient log serialization

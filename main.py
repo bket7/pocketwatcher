@@ -1,0 +1,406 @@
+"""
+Pocketwatcher: Solana CTO/Stealth-Accumulation Monitor
+
+Main entry point for the application.
+"""
+
+import asyncio
+import logging
+import signal
+import sys
+from typing import Optional
+
+from config.settings import settings
+from storage.redis_client import RedisClient
+from storage.postgres_client import PostgresClient
+from storage.delta_log import DeltaLog
+from storage.event_log import EventLog
+from stream.yellowstone import YellowstoneClient, MockYellowstoneClient
+from stream.consumer import StreamConsumer
+from stream.dedup import DedupFilter
+from parser.alt_cache import ALTCache
+from enrichment.helius import HeliusClient
+from alerting.discord import DiscordAlerter
+from alerting.telegram import TelegramAlerter
+from core.processor import TransactionProcessor
+from core.monitoring import MetricsCollector, HealthChecker
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+    ]
+)
+
+logger = logging.getLogger("pocketwatcher")
+
+
+class Application:
+    """Main application class orchestrating all components."""
+
+    def __init__(self, use_mock_stream: bool = False):
+        self.use_mock_stream = use_mock_stream
+        self._running = False
+        self._shutdown_event = asyncio.Event()
+
+        # Components (initialized in start())
+        self.redis: Optional[RedisClient] = None
+        self.postgres: Optional[PostgresClient] = None
+        self.delta_log: Optional[DeltaLog] = None
+        self.event_log: Optional[EventLog] = None
+        self.yellowstone: Optional[YellowstoneClient] = None
+        self.consumer: Optional[StreamConsumer] = None
+        self.dedup: Optional[DedupFilter] = None
+        self.alt_cache: Optional[ALTCache] = None
+        self.helius: Optional[HeliusClient] = None
+        self.discord: Optional[DiscordAlerter] = None
+        self.telegram: Optional[TelegramAlerter] = None
+        self.processor: Optional[TransactionProcessor] = None
+        self.metrics: Optional[MetricsCollector] = None
+        self.health_checker: Optional[HealthChecker] = None
+
+        # Tasks
+        self._tasks = []
+
+    async def start(self):
+        """Start all components."""
+        logger.info("Starting Pocketwatcher...")
+
+        # Initialize metrics
+        self.metrics = MetricsCollector()
+
+        # Initialize storage
+        logger.info("Connecting to Redis...")
+        self.redis = RedisClient()
+        await self.redis.connect()
+
+        logger.info("Connecting to PostgreSQL...")
+        self.postgres = PostgresClient()
+        await self.postgres.connect()
+
+        logger.info("Initializing logs...")
+        self.delta_log = DeltaLog()
+        await self.delta_log.start()
+
+        self.event_log = EventLog()
+        await self.event_log.start()
+
+        # Initialize stream client
+        logger.info("Initializing stream client...")
+        if self.use_mock_stream:
+            self.yellowstone = MockYellowstoneClient()
+        else:
+            self.yellowstone = YellowstoneClient()
+
+        await self.yellowstone.load_programs()
+
+        # Initialize dedup
+        self.dedup = DedupFilter(self.redis)
+
+        # Initialize ALT cache
+        self.alt_cache = ALTCache()
+        await self.alt_cache.start()
+
+        # Initialize enrichment
+        logger.info("Initializing Helius client...")
+        self.helius = HeliusClient()
+        await self.helius.start()
+
+        # Initialize alerting
+        logger.info("Initializing alerters...")
+        self.discord = DiscordAlerter()
+        await self.discord.start()
+
+        self.telegram = TelegramAlerter()
+        await self.telegram.start()
+
+        # Initialize processor
+        logger.info("Initializing transaction processor...")
+        self.processor = TransactionProcessor(
+            redis_client=self.redis,
+            postgres_client=self.postgres,
+            delta_log=self.delta_log,
+            event_log=self.event_log,
+            helius_client=self.helius,
+            discord_alerter=self.discord,
+            telegram_alerter=self.telegram,
+            metrics=self.metrics,
+            known_programs=self.yellowstone.known_programs,
+        )
+        await self.processor.initialize()
+
+        # Initialize consumer
+        self.consumer = StreamConsumer(self.redis)
+
+        # Initialize health checker
+        self.health_checker = HealthChecker(self.metrics)
+
+        self._running = True
+        logger.info("Pocketwatcher started successfully!")
+
+        # Send test messages
+        if self.discord.is_configured():
+            await self.discord.send_test_message()
+        if self.telegram.is_configured():
+            await self.telegram.send_test_message()
+
+    async def stop(self):
+        """Stop all components gracefully."""
+        logger.info("Stopping Pocketwatcher...")
+        self._running = False
+        self._shutdown_event.set()
+
+        # Cancel all tasks
+        for task in self._tasks:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        # Stop components
+        if self.yellowstone:
+            self.yellowstone.stop()
+            await self.yellowstone.disconnect()
+
+        if self.consumer:
+            self.consumer.stop()
+
+        if self.delta_log:
+            await self.delta_log.stop()
+
+        if self.event_log:
+            await self.event_log.stop()
+
+        if self.alt_cache:
+            await self.alt_cache.stop()
+
+        if self.helius:
+            await self.helius.stop()
+
+        if self.discord:
+            await self.discord.stop()
+
+        if self.telegram:
+            await self.telegram.stop()
+
+        if self.redis:
+            await self.redis.close()
+
+        if self.postgres:
+            await self.postgres.close()
+
+        logger.info("Pocketwatcher stopped.")
+
+    async def run(self):
+        """Run the main application loop."""
+        # Start background tasks
+        self._tasks = [
+            asyncio.create_task(self._run_ingest()),
+            asyncio.create_task(self._run_consumer()),
+            asyncio.create_task(self._run_detection_loop()),
+            asyncio.create_task(self._run_maintenance_loop()),
+            asyncio.create_task(self.health_checker.health_check_loop()),
+        ]
+
+        # Wait for shutdown
+        await self._shutdown_event.wait()
+
+    async def _run_ingest(self):
+        """Run the Yellowstone stream ingest."""
+        logger.info("Starting stream ingest...")
+
+        async def on_transaction(tx):
+            """Handle incoming transaction from stream."""
+            # Push to Redis stream for buffered processing
+            try:
+                # Serialize transaction data
+                import msgpack
+                raw_data = msgpack.packb(self._tx_to_dict(tx))
+                await self.redis.push_to_stream(raw_data)
+            except Exception as e:
+                logger.error(f"Failed to push transaction: {e}")
+
+        async def on_error(error):
+            """Handle stream errors."""
+            logger.error(f"Stream error: {error}")
+
+        try:
+            await self.yellowstone.stream_transactions(
+                on_transaction=on_transaction,
+                on_error=on_error,
+            )
+        except asyncio.CancelledError:
+            logger.info("Ingest task cancelled")
+
+    def _tx_to_dict(self, tx) -> dict:
+        """Convert transaction to dict for serialization."""
+        # Handle both protobuf and dict formats
+        if isinstance(tx, dict):
+            return tx
+
+        # Assume protobuf-style object
+        try:
+            return {
+                "signature": tx.signature if hasattr(tx, "signature") else str(tx),
+                "slot": tx.slot if hasattr(tx, "slot") else 0,
+                "block_time": tx.block_time if hasattr(tx, "block_time") else 0,
+                "fee_payer": tx.transaction.message.account_keys[0] if hasattr(tx, "transaction") else "",
+                "account_keys": list(tx.transaction.message.account_keys) if hasattr(tx, "transaction") else [],
+                "pre_token_balances": list(tx.meta.pre_token_balances) if hasattr(tx, "meta") else [],
+                "post_token_balances": list(tx.meta.post_token_balances) if hasattr(tx, "meta") else [],
+                "pre_balances": list(tx.meta.pre_balances) if hasattr(tx, "meta") else [],
+                "post_balances": list(tx.meta.post_balances) if hasattr(tx, "meta") else [],
+                "fee": tx.meta.fee if hasattr(tx, "meta") else 0,
+                "inner_instructions": list(tx.meta.inner_instructions) if hasattr(tx, "meta") else [],
+            }
+        except Exception as e:
+            logger.warning(f"Failed to convert tx to dict: {e}")
+            return {"raw": str(tx)}
+
+    async def _run_consumer(self):
+        """Run the Redis stream consumer."""
+        logger.info("Starting stream consumer...")
+
+        async def on_message(msg_id, raw_data):
+            """Handle message from Redis stream."""
+            import msgpack
+
+            try:
+                tx_data = msgpack.unpackb(raw_data)
+
+                # Dedup check
+                signature = tx_data.get("signature", "")
+                if signature and await self.dedup.is_duplicate(signature):
+                    return
+
+                # Process transaction
+                await self.processor.process_transaction(tx_data)
+
+            except Exception as e:
+                logger.error(f"Consumer error: {e}")
+
+        async def on_error(msg_id, error):
+            """Handle consumer errors."""
+            logger.error(f"Consumer error for {msg_id}: {error}")
+
+        try:
+            await self.consumer.start(
+                on_message=on_message,
+                on_error=on_error,
+            )
+        except asyncio.CancelledError:
+            logger.info("Consumer task cancelled")
+
+    async def _run_detection_loop(self):
+        """Run periodic detection trigger evaluation."""
+        logger.info("Starting detection loop...")
+
+        while self._running:
+            try:
+                await asyncio.sleep(1)  # Evaluate every second
+
+                # Get all active mints and evaluate triggers
+                results = await self.processor.trigger_evaluator.evaluate_all_active()
+
+                for result in results:
+                    logger.info(f"Trigger fired: {result.trigger_name} for mint")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Detection loop error: {e}")
+                await asyncio.sleep(5)
+
+    async def _run_maintenance_loop(self):
+        """Run periodic maintenance tasks."""
+        logger.info("Starting maintenance loop...")
+
+        while self._running:
+            try:
+                await asyncio.sleep(60)  # Run every minute
+
+                # Update metrics
+                stream_info = await self.redis.get_stream_info()
+                self.metrics.set_stream_length(stream_info.get("length", 0))
+
+                hot_tokens = await self.processor.state_manager.get_hot_tokens()
+                self.metrics.set_hot_token_count(len(hot_tokens))
+
+                # Log stats
+                summary = self.metrics.get_summary()
+                logger.info(
+                    f"Stats: {summary['tx_per_second']:.1f} tx/s, "
+                    f"{summary['swaps_detected']} swaps, "
+                    f"{summary['hot_tokens_current']} HOT tokens, "
+                    f"lag: {summary['processing_lag_seconds']:.1f}s"
+                )
+
+                # Cleanup inactive mints
+                await self.processor.counter_manager.cleanup_inactive()
+
+                # Refresh HOT tokens
+                await self.processor.state_manager.refresh_hot_tokens()
+
+                # Flush event log
+                await self.event_log.flush()
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Maintenance loop error: {e}")
+
+
+async def main(use_mock: bool = False):
+    """Main entry point."""
+    app = Application(use_mock_stream=use_mock)
+
+    # Setup signal handlers
+    loop = asyncio.get_event_loop()
+
+    def signal_handler():
+        logger.info("Received shutdown signal")
+        asyncio.create_task(app.stop())
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, signal_handler)
+        except NotImplementedError:
+            # Windows doesn't support add_signal_handler
+            pass
+
+    try:
+        await app.start()
+        await app.run()
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        raise
+    finally:
+        await app.stop()
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Pocketwatcher - Solana CTO Monitor")
+    parser.add_argument(
+        "--mock",
+        action="store_true",
+        help="Use mock stream instead of real Yellowstone connection"
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging"
+    )
+
+    args = parser.parse_args()
+
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    asyncio.run(main(use_mock=args.mock))

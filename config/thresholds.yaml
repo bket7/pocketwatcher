@@ -1,0 +1,43 @@
+# Detection Thresholds
+# Hot-reload: Same as programs - Redis config + pubsub
+
+triggers:
+  # --- 5-minute burst triggers (fast stealth) ---
+  - name: concentrated_accumulation
+    conditions:
+      - buy_count_5m >= 20
+      - unique_buyers_5m <= 5
+
+  - name: stealth_accumulation
+    conditions:
+      - buy_volume_sol_5m > 10
+      - avg_buy_size_5m < 0.3
+
+  - name: extreme_ratio
+    conditions:
+      - buy_sell_ratio_5m > 10
+
+  - name: sybil_pattern
+    conditions:
+      - new_wallet_pct_5m > 0.7  # "new" = first_seen_in_your_db
+
+  - name: whale_concentration
+    conditions:
+      - top_3_buyers_volume_share_5m >= 0.6
+
+  # --- 1-hour slow stealth triggers ---
+  - name: slow_stealth_accumulation
+    conditions:
+      - buy_volume_sol_1h > 50
+      - unique_buyers_1h <= 10
+      - avg_buy_size_1h < 1.0
+
+  - name: slow_concentration
+    conditions:
+      - top_3_buyers_volume_share_1h >= 0.5
+      - buy_count_1h >= 30
+
+  - name: gradual_accumulation
+    conditions:
+      - buy_sell_ratio_1h > 5
+      - buy_volume_sol_1h > 20
