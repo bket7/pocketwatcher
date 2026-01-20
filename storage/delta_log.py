@@ -7,7 +7,7 @@ import time
 import zlib
 from datetime import datetime
 from pathlib import Path
-from typing import AsyncIterator, List, Optional
+from typing import Any, AsyncIterator, List, Optional
 
 import aiofiles
 import msgpack
@@ -35,7 +35,7 @@ class DeltaLog:
     def __init__(self, data_dir: str = "data/delta_logs"):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self._current_file: Optional[aiofiles.threadpool.binary.AsyncBufferedWriter] = None
+        self._current_file: Optional[Any] = None  # aiofiles file handle
         self._current_file_time: int = 0
         self._write_lock = asyncio.Lock()
         self._cleanup_task: Optional[asyncio.Task] = None
@@ -69,7 +69,7 @@ class DeltaLog:
             await self._current_file.close()
             self._current_file = None
 
-    async def _get_file(self) -> aiofiles.threadpool.binary.AsyncBufferedWriter:
+    async def _get_file(self) -> Any:
         """Get current file handle, rotating if needed."""
         now = int(time.time())
         current_bucket = now // ROTATION_INTERVAL_SECONDS
