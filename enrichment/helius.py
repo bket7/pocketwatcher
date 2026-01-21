@@ -405,6 +405,64 @@ class HeliusClient:
 
         return None
 
+    async def get_token_metadata_das(self, mint: str) -> Optional[Dict[str, Any]]:
+        """
+        Get token metadata via Helius DAS API (getAsset).
+
+        This works for all tokens including new pump.fun tokens.
+        Uses Helius DAS endpoint (1 credit).
+
+        Returns dict with name, symbol, image.
+        """
+        try:
+            # DAS API endpoint
+            url = f"https://mainnet.helius-rpc.com/?api-key={settings.helius_api_key}"
+
+            payload = {
+                "jsonrpc": "2.0",
+                "id": "das-getasset",
+                "method": "getAsset",
+                "params": {
+                    "id": mint,
+                    "displayOptions": {
+                        "showFungible": True
+                    }
+                }
+            }
+
+            # Check credit budget (costs 1 credit)
+            if not self.credit_bucket.can_spend(1):
+                return None
+
+            response = await self._http_client.post(url, json=payload, timeout=5.0)
+            response.raise_for_status()
+            data = response.json()
+
+            self.credit_bucket.spend(1)
+            self._requests += 1
+
+            result = data.get("result", {})
+            if result:
+                content = result.get("content", {})
+                metadata = content.get("metadata", {})
+                links = content.get("links", {})
+
+                name = metadata.get("name")
+                symbol = metadata.get("symbol")
+                image = links.get("image") or content.get("json_uri")
+
+                if name or symbol:
+                    return {
+                        "name": name,
+                        "symbol": symbol,
+                        "image": image,
+                    }
+        except Exception as e:
+            logger.debug(f"DAS metadata fetch failed for {mint[:8]}: {e}")
+            self._errors += 1
+
+        return None
+
     def is_degraded(self) -> bool:
         """Check if enrichment is degraded due to budget."""
         return self.credit_bucket.is_degraded()

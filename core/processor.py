@@ -417,12 +417,20 @@ class TransactionProcessor:
             token_symbol = token_profile.symbol if token_profile else None
             token_image = None
 
-            # Always try DexScreener for image, plus name/symbol if missing
+            # Try DexScreener first for metadata (free, no credits)
             dex_meta = await self.helius.get_token_metadata_dexscreener(mint)
             if dex_meta:
                 token_name = token_name or dex_meta.get("name")
                 token_symbol = token_symbol or dex_meta.get("symbol")
                 token_image = dex_meta.get("image")
+
+            # If still missing name/symbol, try Helius DAS API (works for new pump.fun tokens)
+            if not token_name or not token_symbol:
+                das_meta = await self.helius.get_token_metadata_das(mint)
+                if das_meta:
+                    token_name = token_name or das_meta.get("name")
+                    token_symbol = token_symbol or das_meta.get("symbol")
+                    token_image = token_image or das_meta.get("image")
 
             # Get dominant venue
             venue = await self.postgres.get_dominant_venue(mint)
