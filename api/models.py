@@ -107,6 +107,12 @@ class AlertModel(BaseModel):
     buy_sell_ratio_5m: float
     created_at: str
     venue: Optional[str] = None
+    # Market cap info - critical for trading decisions
+    mcap_sol: Optional[float] = None
+    price_sol: Optional[float] = None
+    token_image: Optional[str] = None
+    # Avg entry mcap of top buyers (when did they start accumulating?)
+    avg_entry_mcap: Optional[float] = None
 
 
 class AlertsResponse(BaseModel):

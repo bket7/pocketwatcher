@@ -331,6 +331,32 @@ class RedisClient:
                 await self.redis.srem("hot_tokens", mint)
         return hot
 
+    # ============== Token Market Cap Tracking ==============
+
+    async def set_token_mcap(self, mint: str, mcap_sol: float, price_sol: float, ttl_seconds: int = 3600):
+        """Store latest market cap and price for a token."""
+        pipe = self.redis.pipeline()
+        pipe.set(f"mcap:{mint}", str(mcap_sol), ex=ttl_seconds)
+        pipe.set(f"price:{mint}", str(price_sol), ex=ttl_seconds)
+        await pipe.execute()
+
+    async def get_token_mcap(self, mint: str) -> Optional[Dict[str, float]]:
+        """Get latest market cap and price for a token."""
+        pipe = self.redis.pipeline()
+        pipe.get(f"mcap:{mint}")
+        pipe.get(f"price:{mint}")
+        results = await pipe.execute()
+
+        mcap = results[0]
+        price = results[1]
+
+        if mcap is not None:
+            return {
+                "mcap_sol": float(mcap),
+                "price_sol": float(price) if price else None,
+            }
+        return None
+
     # ============== Config Hot Reload ==============
 
     async def get_config(self, key: str) -> Optional[bytes]:

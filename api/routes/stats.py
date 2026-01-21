@@ -103,13 +103,13 @@ async def get_alerts(
     """Get recent alerts."""
     postgres = await get_postgres()
 
-    # Build query
+    # Build query - include mcap fields for trading decisions
     if mint:
         rows = await postgres.fetch(
             """
             SELECT id, mint, token_name, token_symbol, trigger_name, trigger_reason,
                    buy_count_5m, unique_buyers_5m, volume_sol_5m, buy_sell_ratio_5m,
-                   created_at, venue
+                   created_at, venue, mcap_sol, price_sol, token_image, top_buyers
             FROM alerts
             WHERE mint = $1
             ORDER BY created_at DESC
@@ -125,7 +125,7 @@ async def get_alerts(
             """
             SELECT id, mint, token_name, token_symbol, trigger_name, trigger_reason,
                    buy_count_5m, unique_buyers_5m, volume_sol_5m, buy_sell_ratio_5m,
-                   created_at, venue
+                   created_at, venue, mcap_sol, price_sol, token_image, top_buyers
             FROM alerts
             ORDER BY created_at DESC
             LIMIT $1 OFFSET $2
@@ -141,6 +141,37 @@ async def get_alerts(
         if ratio == float('inf') or ratio != ratio:  # inf or nan
             ratio = 999.0
 
+        # Calculate avg entry mcap from top_buyers if available
+        avg_entry_mcap = None
+        top_buyers_raw = row.get("top_buyers")
+        if top_buyers_raw:
+            try:
+                # top_buyers is stored as JSONB string
+                import ast
+                if isinstance(top_buyers_raw, str):
+                    top_buyers_list = ast.literal_eval(top_buyers_raw)
+                else:
+                    top_buyers_list = top_buyers_raw
+
+                # Calculate weighted avg entry mcap
+                total_mcap = 0
+                count = 0
+                for buyer in top_buyers_list:
+                    entry_mcap = buyer.get("avg_entry_mcap")
+                    if entry_mcap and entry_mcap > 0:
+                        total_mcap += entry_mcap
+                        count += 1
+                if count > 0:
+                    avg_entry_mcap = total_mcap / count
+            except Exception:
+                pass
+
+        # Handle mcap infinity/nan
+        mcap_sol = row.get("mcap_sol")
+        if mcap_sol is not None:
+            if mcap_sol == float('inf') or mcap_sol != mcap_sol:
+                mcap_sol = None
+
         alerts.append(AlertModel(
             id=row["id"],
             mint=row["mint"],
@@ -154,6 +185,10 @@ async def get_alerts(
             buy_sell_ratio_5m=ratio,
             created_at=row["created_at"].isoformat() if row.get("created_at") else "",
             venue=row.get("venue"),
+            mcap_sol=mcap_sol,
+            price_sol=row.get("price_sol"),
+            token_image=row.get("token_image"),
+            avg_entry_mcap=avg_entry_mcap,
         ))
 
     return AlertsResponse(alerts=alerts, total=total)

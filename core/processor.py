@@ -220,17 +220,26 @@ class TransactionProcessor:
             buy_count=1 if swap.side.value == "buy" else 0,
         )
 
-        # Store full swap event if token is HOT
-        if await self.state_manager.is_hot(mint):
-            # Calculate mcap at swap time
-            supply_info = await self._get_token_supply(mint)
+        # Calculate mcap at swap time for ALL swaps (not just HOT)
+        # This is critical for having mcap data when alerts are created
+        supply_info = await self._get_token_supply(mint)
+        mcap_at_swap = None
+        if swap.quote_mint == WSOL_MINT and swap.base_amount > 0:
             mcap_at_swap = self._calculate_mcap_at_swap(
                 swap.quote_amount,
                 swap.base_amount,
                 swap.quote_mint,
                 supply_info,
             )
+            # Store latest mcap in Redis for quick alert lookups
+            if mcap_at_swap is not None:
+                price_per_unit = (swap.quote_amount / 1e9) / swap.base_amount
+                decimals = supply_info.get("decimals", 9) if supply_info else 9
+                price_sol = price_per_unit * (10 ** decimals)
+                await self.redis.set_token_mcap(mint, mcap_at_swap, price_sol)
 
+        # Store full swap event if token is HOT
+        if await self.state_manager.is_hot(mint):
             swap_event = SwapEventFull(
                 signature=signature,
                 slot=slot,
@@ -336,64 +345,60 @@ class TransactionProcessor:
         """
         Calculate price and market cap for a token at alert time.
 
-        Uses rolling counters data for price estimation when possible,
-        falls back to token supply lookup via Helius.
+        Uses Redis-cached mcap from recent swaps (fast and always available),
+        falls back to postgres if needed.
 
         Returns dict with price_sol, mcap_sol, token_supply (or None values if unavailable).
         """
         result = {"price_sol": None, "mcap_sol": None, "token_supply": None}
 
         try:
-            # Get stats from rolling counters (already computed, fast)
-            stats = await self.counter_manager.get_stats(mint, 300)
+            # FIRST: Try Redis for cached mcap (set by _process_detected_swap)
+            # This is the most reliable source since it's set in real-time
+            redis_mcap = await self.redis.get_token_mcap(mint)
+            if redis_mcap:
+                result["mcap_sol"] = redis_mcap["mcap_sol"]
+                result["price_sol"] = redis_mcap.get("price_sol")
+                logger.info(
+                    f"Got mcap from Redis for {mint[:8]}: {result['mcap_sol']:.2f} SOL"
+                )
 
-            # We can estimate price from volume/buy_count if available
-            if stats.buy_count > 0 and stats.volume_sol > 0:
-                # Rough price estimate: total SOL volume / estimated token amount
-                # This is approximate but fast
+            # Get token supply for completeness
+            supply_info = await self.helius.get_token_supply(mint)
+            if supply_info:
+                result["token_supply"] = supply_info["supply"]
 
-                # Fetch token supply and decimals for accurate calculation
-                supply_info = await self.helius.get_token_supply(mint)
+            # If Redis didn't have mcap, try postgres as fallback
+            if result["mcap_sol"] is None:
+                try:
+                    swaps = await asyncio.wait_for(
+                        self.postgres.get_recent_swaps(mint, limit=5),
+                        timeout=2.0
+                    )
+                    buys = [s for s in swaps if s.side.value == "buy" and s.quote_mint == WSOL_MINT]
 
-                if supply_info:
-                    raw_supply = supply_info["supply"]
-                    decimals = supply_info["decimals"]
-                    result["token_supply"] = raw_supply
+                    if buys and supply_info:
+                        total_quote = sum(s.quote_amount for s in buys)
+                        total_base = sum(s.base_amount for s in buys)
+                        decimals = supply_info["decimals"]
+                        raw_supply = supply_info["supply"]
 
-                    # For now, we can't calculate exact price without swap data
-                    # But we can at least store the supply
-                    # Price calculation will be None until we have swap data in postgres
-                    # after backfill completes
+                        if total_base > 0:
+                            price_per_unit = (total_quote / 1e9) / total_base
+                            price_sol = price_per_unit * (10 ** decimals)
+                            supply_whole_tokens = raw_supply / (10 ** decimals)
+                            mcap_sol = price_sol * supply_whole_tokens
 
-                    # Try to get price from postgres if any swaps are already backfilled
-                    try:
-                        swaps = await asyncio.wait_for(
-                            self.postgres.get_recent_swaps(mint, limit=5),
-                            timeout=2.0
-                        )
-                        buys = [s for s in swaps if s.side.value == "buy" and s.quote_mint == WSOL_MINT]
+                            result["price_sol"] = price_sol
+                            result["mcap_sol"] = mcap_sol
 
-                        if buys:
-                            total_quote = sum(s.quote_amount for s in buys)
-                            total_base = sum(s.base_amount for s in buys)
-
-                            if total_base > 0:
-                                price_per_unit = (total_quote / 1e9) / total_base
-                                price_sol = price_per_unit * (10 ** decimals)
-                                supply_whole_tokens = raw_supply / (10 ** decimals)
-                                mcap_sol = price_sol * supply_whole_tokens
-
-                                result["price_sol"] = price_sol
-                                result["mcap_sol"] = mcap_sol
-
-                                logger.info(
-                                    f"Calculated price for {mint[:8]}: {price_sol:.6f} SOL/token, "
-                                    f"mcap: {mcap_sol:.2f} SOL ({len(buys)} buys)"
-                                )
-                    except asyncio.TimeoutError:
-                        logger.debug(f"Postgres swap query timed out for {mint[:8]}")
-                    except Exception as e:
-                        logger.debug(f"Failed to get swaps from postgres for {mint[:8]}: {e}")
+                            logger.info(
+                                f"Calculated mcap from postgres for {mint[:8]}: {mcap_sol:.2f} SOL"
+                            )
+                except asyncio.TimeoutError:
+                    logger.debug(f"Postgres swap query timed out for {mint[:8]}")
+                except Exception as e:
+                    logger.debug(f"Failed to get swaps from postgres for {mint[:8]}: {e}")
 
         except Exception as e:
             logger.warning(f"Failed to calculate price/mcap for {mint[:8]}: {e}")
