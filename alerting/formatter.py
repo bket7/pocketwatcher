@@ -1,11 +1,49 @@
 """Alert message formatting - clean, scannable Discord embeds."""
 
+import logging
+import time
 from datetime import datetime
 from typing import Dict, List, Optional, Any
+
+import httpx
 
 from models.profiles import Alert
 from detection.counters import TokenStats
 from enrichment.scoring import CTOScore
+
+logger = logging.getLogger(__name__)
+
+# SOL price cache (module-level for simplicity)
+_sol_price_cache = {"price": None, "timestamp": 0}
+_SOL_PRICE_CACHE_TTL = 60  # 60 seconds
+
+
+def get_sol_price_sync() -> Optional[float]:
+    """Get current SOL/USD price with caching. Returns cached or fallback on error."""
+    global _sol_price_cache
+    now = time.time()
+
+    # Return cached price if fresh
+    if _sol_price_cache["price"] and (now - _sol_price_cache["timestamp"]) < _SOL_PRICE_CACHE_TTL:
+        return _sol_price_cache["price"]
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            response = client.get(
+                "https://api.coingecko.com/api/v3/simple/price",
+                params={"ids": "solana", "vs_currencies": "usd"}
+            )
+            if response.status_code == 200:
+                data = response.json()
+                price = data.get("solana", {}).get("usd")
+                if price:
+                    _sol_price_cache = {"price": price, "timestamp": now}
+                    return price
+    except Exception as e:
+        logger.debug(f"Failed to fetch SOL price: {e}")
+
+    # Return cached price even if stale, or fallback
+    return _sol_price_cache["price"] or 200.0  # Reasonable fallback
 
 
 class AlertFormatter:
@@ -377,13 +415,16 @@ class AlertFormatter:
 
     @staticmethod
     def _format_mcap(mcap_sol: float) -> str:
-        """Format market cap in SOL for display."""
-        if mcap_sol >= 1_000_000:
-            return f"{mcap_sol / 1_000_000:.1f}M SOL"
-        elif mcap_sol >= 1_000:
-            return f"{mcap_sol / 1_000:.1f}K SOL"
+        """Format market cap in USD for display."""
+        sol_price = get_sol_price_sync()
+        mcap_usd = mcap_sol * sol_price if sol_price else mcap_sol * 200
+
+        if mcap_usd >= 1_000_000:
+            return f"${mcap_usd / 1_000_000:.1f}M"
+        elif mcap_usd >= 1_000:
+            return f"${mcap_usd / 1_000:.0f}K"
         else:
-            return f"{mcap_sol:.1f} SOL"
+            return f"${mcap_usd:.0f}"
 
     @staticmethod
     def _get_risk_level(score: Optional[CTOScore]) -> str:

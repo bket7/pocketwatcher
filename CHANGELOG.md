@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Uses getAsset method to fetch on-chain Metaplex metadata
   - Works for newly launched pump.fun tokens
 
+### Changed
+- **Market caps now displayed in USD**: Converted from SOL-denominated to USD values
+  - Frontend fetches SOL/USD price from CoinGecko API (cached 60s)
+  - Discord alerts also convert to USD using real-time price
+  - Format: "$1.2M", "$50K", "$500" instead of "1.2M SOL"
+  - Cleaner display without redundant labels
+
 ### Fixed
 - **Market cap timing issue**: Now calculates and stores mcap for ALL swaps (not just HOT tokens)
   - Mcap is cached in Redis and available immediately at alert creation time

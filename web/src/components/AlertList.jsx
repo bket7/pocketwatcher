@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react'
-import { getAlerts } from '../api'
+import { getAlerts, getSolPrice } from '../api'
 
-// Format market cap for display
-function formatMcap(mcap) {
-  if (!mcap || mcap <= 0) return null
-  if (mcap >= 1_000_000) return `${(mcap / 1_000_000).toFixed(1)}M`
-  if (mcap >= 1_000) return `${(mcap / 1_000).toFixed(1)}K`
-  return `${mcap.toFixed(0)}`
+// Format market cap in USD for display
+function formatMcapUsd(mcapSol, solPrice) {
+  if (!mcapSol || mcapSol <= 0 || !solPrice) return null
+  const mcapUsd = mcapSol * solPrice
+  if (mcapUsd >= 1_000_000) return `$${(mcapUsd / 1_000_000).toFixed(1)}M`
+  if (mcapUsd >= 1_000) return `$${(mcapUsd / 1_000).toFixed(0)}K`
+  return `$${mcapUsd.toFixed(0)}`
 }
 
 // Venue badges
@@ -18,10 +19,10 @@ const VENUE_BADGES = {
   meteora: { emoji: '☄️', name: 'Meteora', color: 'text-orange-400' },
 }
 
-function AlertRow({ alert }) {
+function AlertRow({ alert, solPrice }) {
   const dexUrl = `https://dexscreener.com/solana/${alert.mint}`
-  const mcapDisplay = formatMcap(alert.mcap_sol)
-  const avgEntryDisplay = formatMcap(alert.avg_entry_mcap)
+  const mcapDisplay = formatMcapUsd(alert.mcap_sol, solPrice)
+  const avgEntryDisplay = formatMcapUsd(alert.avg_entry_mcap, solPrice)
   const venue = VENUE_BADGES[alert.venue] || { emoji: '🔄', name: 'DEX', color: 'text-gray-400' }
 
   return (
@@ -54,10 +55,7 @@ function AlertRow({ alert }) {
       {/* MCAP AT ALERT - CRITICAL INFO */}
       <td className="px-4 py-3 text-center">
         {mcapDisplay ? (
-          <div className="flex flex-col items-center">
-            <span className="text-pw-yellow font-bold text-lg">{mcapDisplay}</span>
-            <span className="text-xs text-gray-500">SOL mcap</span>
-          </div>
+          <span className="text-pw-yellow font-bold text-lg">{mcapDisplay}</span>
         ) : (
           <span className="text-gray-600">—</span>
         )}
@@ -66,10 +64,7 @@ function AlertRow({ alert }) {
       {/* AVG ENTRY MCAP - When did buyers start accumulating? */}
       <td className="px-4 py-3 text-center">
         {avgEntryDisplay ? (
-          <div className="flex flex-col items-center">
-            <span className="text-pw-green font-bold">{avgEntryDisplay}</span>
-            <span className="text-xs text-gray-500">avg entry</span>
-          </div>
+          <span className="text-pw-green font-bold">{avgEntryDisplay}</span>
         ) : (
           <span className="text-gray-600">—</span>
         )}
@@ -114,14 +109,19 @@ export default function AlertList() {
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [solPrice, setSolPrice] = useState(null)
 
   useEffect(() => {
-    async function fetchAlerts() {
+    async function fetchData() {
       try {
         setLoading(true)
-        const data = await getAlerts(20)
-        setAlerts(data.alerts)
-        setTotal(data.total)
+        const [alertsData, price] = await Promise.all([
+          getAlerts(20),
+          getSolPrice()
+        ])
+        setAlerts(alertsData.alerts)
+        setTotal(alertsData.total)
+        setSolPrice(price)
         setError(null)
       } catch (e) {
         setError(e.message)
@@ -130,8 +130,8 @@ export default function AlertList() {
       }
     }
 
-    fetchAlerts()
-    const interval = setInterval(fetchAlerts, 10000) // Refresh every 10s
+    fetchData()
+    const interval = setInterval(fetchData, 10000) // Refresh every 10s
     return () => clearInterval(interval)
   }, [])
 
@@ -183,7 +183,7 @@ export default function AlertList() {
             </thead>
             <tbody>
               {alerts.map((alert) => (
-                <AlertRow key={alert.id} alert={alert} />
+                <AlertRow key={alert.id} alert={alert} solPrice={solPrice} />
               ))}
             </tbody>
           </table>

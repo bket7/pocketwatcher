@@ -108,3 +108,39 @@ export async function getHotTokens() {
 export async function getTokenStats(mint) {
   return request(`/token/${mint}/stats`);
 }
+
+// ============== Price ==============
+
+// Cache SOL price to avoid hammering the API
+let solPriceCache = { price: null, timestamp: 0 };
+const SOL_PRICE_CACHE_TTL = 60000; // 60 seconds
+
+export async function getSolPrice() {
+  const now = Date.now();
+
+  // Return cached price if fresh
+  if (solPriceCache.price && (now - solPriceCache.timestamp) < SOL_PRICE_CACHE_TTL) {
+    return solPriceCache.price;
+  }
+
+  try {
+    const response = await fetch(
+      'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd',
+      { headers: { 'Accept': 'application/json' } }
+    );
+
+    if (response.ok) {
+      const data = await response.json();
+      const price = data?.solana?.usd;
+      if (price) {
+        solPriceCache = { price, timestamp: now };
+        return price;
+      }
+    }
+  } catch (e) {
+    console.warn('Failed to fetch SOL price:', e);
+  }
+
+  // Return cached price even if stale, or fallback
+  return solPriceCache.price || 200; // Reasonable fallback
+}
