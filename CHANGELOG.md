@@ -5,6 +5,23 @@ All notable changes to Pocketwatcher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-01-21
+
+### Added
+- **Market cap tracking in alerts**: Critical trading info now displayed in dashboard
+  - `mcap_sol` - Market cap at alert time
+  - `avg_entry_mcap` - Average entry mcap of top buyers (when they started accumulating)
+  - Prominently displayed in AlertList component
+- **Helius DAS API fallback**: Gets token metadata for new tokens not yet on DexScreener
+  - Uses getAsset method to fetch on-chain Metaplex metadata
+  - Works for newly launched pump.fun tokens
+
+### Fixed
+- **Market cap timing issue**: Now calculates and stores mcap for ALL swaps (not just HOT tokens)
+  - Mcap is cached in Redis and available immediately at alert creation time
+  - Previously mcap was null because postgres swaps weren't backfilled yet
+- **Token metadata null values**: Added DAS API fallback for tokens without DexScreener data
+
 ## [0.2.0] - 2026-01-20
 
 ### Added
