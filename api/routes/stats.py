@@ -136,6 +136,11 @@ async def get_alerts(
 
     alerts = []
     for row in rows:
+        # Handle infinity values that can't be JSON serialized
+        ratio = float(row.get("buy_sell_ratio_5m", 0))
+        if ratio == float('inf') or ratio != ratio:  # inf or nan
+            ratio = 999.0
+
         alerts.append(AlertModel(
             id=row["id"],
             mint=row["mint"],
@@ -146,7 +151,7 @@ async def get_alerts(
             buy_count_5m=row.get("buy_count_5m", 0),
             unique_buyers_5m=row.get("unique_buyers_5m", 0),
             volume_sol_5m=float(row.get("volume_sol_5m", 0)),
-            buy_sell_ratio_5m=float(row.get("buy_sell_ratio_5m", 0)),
+            buy_sell_ratio_5m=ratio,
             created_at=row["created_at"].isoformat() if row.get("created_at") else "",
             venue=row.get("venue"),
         ))

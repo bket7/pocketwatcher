@@ -42,6 +42,21 @@ class PostgresClient:
             raise RuntimeError("Not connected to PostgreSQL")
         return self._pool
 
+    async def fetchval(self, query: str, *args):
+        """Execute query and return single value."""
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval(query, *args)
+
+    async def fetch(self, query: str, *args):
+        """Execute query and return all rows."""
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(query, *args)
+
+    async def fetchrow(self, query: str, *args):
+        """Execute query and return single row."""
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(query, *args)
+
     async def _create_tables(self):
         """Create database tables if they don't exist."""
         async with self.pool.acquire() as conn:
