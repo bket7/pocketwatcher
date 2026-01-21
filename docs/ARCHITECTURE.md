@@ -92,6 +92,21 @@ pocketwatcher/
 ├── models/
 │   ├── events.py              # Data models
 │   └── profiles.py            # Token/Wallet profiles
+├── api/
+│   ├── server.py              # FastAPI app
+│   ├── deps.py                # Shared dependencies
+│   ├── models.py              # Pydantic request/response
+│   └── routes/
+│       ├── triggers.py        # Trigger CRUD
+│       ├── settings.py        # Settings CRUD
+│       └── stats.py           # Stats & health
+├── web/
+│   ├── src/
+│   │   ├── App.jsx            # Main React app
+│   │   ├── api.js             # API client
+│   │   ├── components/        # Reusable components
+│   │   └── pages/             # Dashboard, Triggers, Settings
+│   └── package.json
 └── tests/
 ```
 
@@ -146,6 +161,62 @@ pocketwatcher/
 - **PostgreSQL**: Persistent storage
 - **Helius**: Wallet enrichment (credit budgeted)
 - **Discord/Telegram**: Alert delivery
+
+## Web Configuration Dashboard
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│  React Frontend │────▶│  FastAPI Backend │────▶│     Redis       │
+│   (port 3001)   │     │   (port 8080)    │     │  cfg:* keys     │
+└─────────────────┘     └─────────────────┘     │  pub/sub reload │
+                                                 └────────┬────────┘
+                                                          │
+                                                          ▼
+                                                 ┌─────────────────┐
+                                                 │  Pocketwatcher  │
+                                                 │  (subscribes to │
+                                                 │   cfg:reload)   │
+                                                 └─────────────────┘
+```
+
+### Hot-Reload Flow
+
+1. Frontend sends PUT `/api/triggers` with new config
+2. Backend validates config (parse all conditions)
+3. Backend stores in Redis: `cfg:thresholds`
+4. Backend publishes to `cfg:reload` channel
+5. TriggerEvaluator receives notification via pub/sub
+6. TriggerEvaluator atomically replaces trigger lists
+
+### API Endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/triggers` | GET/PUT | Trigger CRUD |
+| `/api/triggers/validate` | POST | Validate without saving |
+| `/api/triggers/reset` | POST | Reset to file defaults |
+| `/api/settings` | GET/PUT | Settings CRUD |
+| `/api/stats` | GET | Real-time stats |
+| `/api/alerts` | GET | Alert history |
+| `/api/health` | GET | Health check |
+| `/api/hot-tokens` | GET | Active HOT tokens |
+
+### Hot-Reloadable Settings
+
+| Setting | Redis Key | Notes |
+|---------|-----------|-------|
+| Trigger thresholds | `cfg:thresholds` | Full YAML config |
+| Discord webhook URL | `cfg:alerts` | Alert channels |
+| Telegram config | `cfg:alerts` | Alert channels |
+| Backpressure thresholds | `cfg:backpressure` | Lag thresholds |
+| Detection parameters | `cfg:detection` | HOT TTL, cooldown |
+
+### Requires Restart
+
+- Redis URL
+- PostgreSQL URL
+- Yellowstone endpoint/token
+- Helius API key
 
 ## Configuration
 

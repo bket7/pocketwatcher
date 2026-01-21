@@ -1,8 +1,9 @@
 """Trigger evaluation for HOT token detection."""
 
+import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import yaml
 
@@ -49,13 +50,98 @@ class TriggerEvaluator:
         self,
         counter_manager: CounterManager,
         config_file: str = "config/thresholds.yaml",
+        redis_client=None,
     ):
         self.counters = counter_manager
         self.config_file = config_file
+        self.redis = redis_client
         self._triggers_5m: List[Trigger] = []
         self._triggers_1h: List[Trigger] = []
         self._evaluations = 0
         self._triggers_fired = 0
+        self._reload_lock = asyncio.Lock()
+        self._config_listener_task: Optional[asyncio.Task] = None
+
+    async def start_config_listener(self):
+        """Subscribe to config reload notifications from Redis."""
+        if not self.redis:
+            logger.warning("No Redis client - config hot-reload disabled")
+            return
+
+        async def on_reload(key_bytes):
+            key = key_bytes.decode() if isinstance(key_bytes, bytes) else key_bytes
+            if key == "thresholds":
+                logger.info("Received config reload notification for thresholds")
+                await self.reload_config()
+
+        self._config_listener_task = await self.redis.subscribe_config_reload(on_reload)
+        logger.info("Started config reload listener")
+
+    async def stop_config_listener(self):
+        """Stop the config reload listener."""
+        if self._config_listener_task:
+            self._config_listener_task.cancel()
+            try:
+                await self._config_listener_task
+            except asyncio.CancelledError:
+                pass
+            self._config_listener_task = None
+            logger.info("Stopped config reload listener")
+
+    async def reload_config(self):
+        """Atomically reload triggers from Redis or file."""
+        async with self._reload_lock:
+            try:
+                config = None
+
+                # Try Redis first
+                if self.redis:
+                    raw = await self.redis.get_config("thresholds")
+                    if raw:
+                        config = yaml.safe_load(raw)
+                        logger.debug("Loaded config from Redis")
+
+                # Fall back to file
+                if not config:
+                    config = self._load_yaml_file()
+                    logger.debug("Loaded config from file")
+
+                # Parse into new lists
+                new_5m = []
+                new_1h = []
+
+                for trigger_def in config.get("triggers", []):
+                    # Skip disabled triggers
+                    if not trigger_def.get("enabled", True):
+                        continue
+
+                    trigger = self._parse_trigger(trigger_def)
+                    if trigger:
+                        has_1h = any("_1h" in c.field for c in trigger.conditions)
+                        if has_1h:
+                            new_1h.append(trigger)
+                        else:
+                            new_5m.append(trigger)
+
+                # Atomic swap
+                self._triggers_5m = new_5m
+                self._triggers_1h = new_1h
+
+                logger.info(
+                    f"Reloaded {len(new_5m)} 5m and {len(new_1h)} 1h triggers"
+                )
+
+            except Exception as e:
+                logger.error(f"Failed to reload config: {e}")
+
+    def _load_yaml_file(self) -> dict:
+        """Load config from YAML file."""
+        try:
+            with open(self.config_file, "r") as f:
+                return yaml.safe_load(f)
+        except Exception as e:
+            logger.error(f"Failed to load config file: {e}")
+            return {"triggers": []}
 
     async def load_config(self):
         """Load trigger configuration from file."""

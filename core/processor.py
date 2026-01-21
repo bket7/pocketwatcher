@@ -78,7 +78,9 @@ class TransactionProcessor:
         self.state_manager = StateManager(
             redis_client, postgres_client, delta_log
         )
-        self.trigger_evaluator = TriggerEvaluator(self.counter_manager)
+        self.trigger_evaluator = TriggerEvaluator(
+            self.counter_manager, redis_client=redis_client
+        )
         self.clusterer = WalletClusterer(postgres_client)
         self.scorer = CTOScorer(self.clusterer)
         self.backpressure = BackpressureManager(redis_client)

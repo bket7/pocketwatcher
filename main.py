@@ -131,6 +131,9 @@ class Application:
         )
         await self.processor.initialize()
 
+        # Start config hot-reload listener
+        await self.processor.trigger_evaluator.start_config_listener()
+
         # Initialize consumer
         consumer_count = max(1, settings.stream_consumer_count)
         if consumer_count > 1:
@@ -174,6 +177,10 @@ class Application:
                 pass
 
         # Stop components
+        # Stop config listener
+        if self.processor:
+            await self.processor.trigger_evaluator.stop_config_listener()
+
         if self.yellowstone:
             self.yellowstone.stop()
             await self.yellowstone.disconnect()

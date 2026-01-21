@@ -5,6 +5,41 @@ All notable changes to Pocketwatcher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-01-20
+
+### Added
+- **Web Configuration Dashboard**: React dashboard for live configuration without restarts
+  - Real-time stats display (tx/s, HOT tokens, alerts, lag, mode)
+  - HOT tokens panel with live stats
+  - Recent alerts list with links to Solscan
+  - Health status indicator
+- **Trigger Editor**: Visual trigger configuration
+  - Add, edit, and delete triggers
+  - Enable/disable individual triggers
+  - Validation with helpful error messages
+  - Hot-reload on save (no restart required)
+- **Settings Panel**: Configure alert channels and detection parameters
+  - Discord webhook URL
+  - Telegram bot token and chat ID
+  - Backpressure thresholds (lag, stream length)
+  - Detection parameters (HOT TTL, cooldown, confidence)
+- **FastAPI Backend**: Configuration API at port 8080
+  - `GET/PUT /api/triggers` - Trigger CRUD
+  - `POST /api/triggers/validate` - Validate config
+  - `POST /api/triggers/reset` - Reset to file defaults
+  - `GET/PUT /api/settings` - Settings CRUD
+  - `GET /api/stats` - Real-time stats
+  - `GET /api/alerts` - Alert history
+  - `GET /api/health` - Health check
+  - `GET /api/hot-tokens` - Active HOT tokens
+- **Hot-Reload for TriggerEvaluator**: Subscribes to Redis pub/sub for instant config updates
+  - Atomic trigger list replacement
+  - No restart required for trigger changes
+
+### Changed
+- TriggerEvaluator now accepts optional redis_client for hot-reload support
+- Added fastapi and uvicorn to requirements.txt
+
 ## [0.1.5] - 2026-01-20
 
 ### Added
