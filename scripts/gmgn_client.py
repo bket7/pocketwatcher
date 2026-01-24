@@ -1,8 +1,8 @@
 """
-GMGN Client for fetching token price/market cap data.
+Token Price Client - Fetches token price/market cap data.
 
-Adapted from sauron's GMGN scraper. Uses browser-launcher service
-with authenticated browser sessions to bypass Cloudflare.
+Uses DexScreener API as primary source (free, no auth required).
+GMGN is available as a fallback but requires browser auth.
 """
 
 import asyncio
@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode
 
+import httpx
 from playwright.async_api import async_playwright, BrowserContext, Page
 
 
@@ -43,7 +44,7 @@ def generate_gmgn_params() -> dict:
 
 @dataclass
 class TokenData:
-    """Token price and market data from GMGN."""
+    """Token price and market data."""
     mint: str
     price_usd: Optional[float] = None
     price_sol: Optional[float] = None
@@ -56,6 +57,131 @@ class TokenData:
     symbol: Optional[str] = None
     success: bool = False
     error: Optional[str] = None
+    source: str = "unknown"
+
+
+class DexScreenerClient:
+    """
+    DexScreener client for fetching token data.
+
+    Uses the free DexScreener API - no auth required.
+    This is the primary/recommended client.
+    """
+
+    def __init__(self):
+        self._client: Optional[httpx.AsyncClient] = None
+        self._request_count = 0
+        self._error_count = 0
+
+    async def start(self):
+        """Start the client."""
+        self._client = httpx.AsyncClient(timeout=15.0)
+
+    async def stop(self):
+        """Stop the client."""
+        if self._client:
+            await self._client.aclose()
+            self._client = None
+
+    async def __aenter__(self):
+        await self.start()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.stop()
+
+    async def get_token(self, mint: str) -> TokenData:
+        """
+        Fetch token data from DexScreener.
+
+        Args:
+            mint: Token mint address
+
+        Returns:
+            TokenData with price and market cap info
+        """
+        if not self._client:
+            return TokenData(mint=mint, success=False, error="Client not started")
+
+        try:
+            resp = await self._client.get(f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
+            self._request_count += 1
+
+            if resp.status_code == 200:
+                data = resp.json()
+                pairs = data.get("pairs", [])
+
+                if not pairs:
+                    return TokenData(
+                        mint=mint,
+                        success=False,
+                        error="No pairs found",
+                        source="dexscreener"
+                    )
+
+                # Get the most liquid Solana pair
+                sol_pairs = [p for p in pairs if p.get("chainId") == "solana"]
+                if not sol_pairs:
+                    sol_pairs = pairs
+
+                best = max(sol_pairs, key=lambda p: float(p.get("liquidity", {}).get("usd", 0) or 0))
+
+                return TokenData(
+                    mint=mint,
+                    price_usd=_safe_float(best.get("priceUsd")),
+                    market_cap_usd=_safe_float(best.get("fdv")),  # fdv = fully diluted valuation
+                    liquidity_usd=_safe_float(best.get("liquidity", {}).get("usd")),
+                    volume_24h_usd=_safe_float(best.get("volume", {}).get("h24")),
+                    price_change_24h_pct=_safe_float(best.get("priceChange", {}).get("h24")),
+                    name=best.get("baseToken", {}).get("name"),
+                    symbol=best.get("baseToken", {}).get("symbol"),
+                    success=True,
+                    source="dexscreener"
+                )
+            else:
+                self._error_count += 1
+                return TokenData(
+                    mint=mint,
+                    success=False,
+                    error=f"HTTP {resp.status_code}",
+                    source="dexscreener"
+                )
+
+        except Exception as e:
+            self._error_count += 1
+            return TokenData(mint=mint, success=False, error=str(e), source="dexscreener")
+
+    async def get_tokens_batch(
+        self,
+        mints: list[str],
+        delay: float = 0.3,
+    ) -> Dict[str, TokenData]:
+        """
+        Fetch multiple tokens with rate limiting.
+
+        Args:
+            mints: List of token mint addresses
+            delay: Delay between requests in seconds
+
+        Returns:
+            Dict mapping mint to TokenData
+        """
+        results = {}
+
+        for mint in mints:
+            results[mint] = await self.get_token(mint)
+            if len(results) < len(mints):
+                await asyncio.sleep(delay)
+
+        return results
+
+    @property
+    def stats(self) -> Dict[str, int]:
+        """Get client stats."""
+        return {
+            "requests": self._request_count,
+            "errors": self._error_count,
+        }
 
 
 class GMGNClient:
@@ -270,23 +396,40 @@ def _safe_float(value: Any) -> Optional[float]:
 
 
 async def main():
-    """Test the GMGN client."""
+    """Test the token price clients."""
     # Test with a known token
-    test_mint = "So11111111111111111111111111111111111111112"  # WSOL
+    test_mint = "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr"  # POPCAT
 
-    print(f"Testing GMGN client with {test_mint}")
+    print(f"Testing DexScreener client with {test_mint}\n")
 
-    async with GMGNClient() as client:
+    async with DexScreenerClient() as client:
         result = await client.get_token(test_mint)
 
         if result.success:
-            print(f"Success!")
+            print(f"DexScreener: Success!")
             print(f"  Name: {result.name}")
             print(f"  Symbol: {result.symbol}")
             print(f"  Price: ${result.price_usd}")
-            print(f"  Market Cap: ${result.market_cap_usd}")
+            print(f"  Market Cap: ${result.market_cap_usd:,.0f}" if result.market_cap_usd else "  Market Cap: N/A")
         else:
-            print(f"Failed: {result.error}")
+            print(f"DexScreener: Failed - {result.error}")
+
+    print("\nTesting GMGN client (may fail due to Cloudflare)...")
+
+    try:
+        async with GMGNClient() as client:
+            result = await client.get_token(test_mint)
+
+            if result.success:
+                print(f"GMGN: Success!")
+                print(f"  Name: {result.name}")
+                print(f"  Symbol: {result.symbol}")
+                print(f"  Price: ${result.price_usd}")
+                print(f"  Market Cap: ${result.market_cap_usd:,.0f}" if result.market_cap_usd else "  Market Cap: N/A")
+            else:
+                print(f"GMGN: Failed - {result.error}")
+    except Exception as e:
+        print(f"GMGN: Error - {e}")
 
 
 if __name__ == "__main__":

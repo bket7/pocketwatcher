@@ -5,6 +5,21 @@ All notable changes to Pocketwatcher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-01-23
+
+### Added
+- **DexScreener client**: New `DexScreenerClient` as primary price data source
+  - Free API, no authentication required
+  - Gets price, market cap, liquidity, volume, and price change data
+  - Used by backtest and daily_report scripts
+
+### Changed
+- **Replaced GMGN with DexScreener**: GMGN has Cloudflare protection that expires frequently
+  - `scripts/gmgn_client.py` now exports `DexScreenerClient` as primary client
+  - `GMGNClient` still available but likely to fail due to Cloudflare
+  - `scripts/daily_report.py` now uses DexScreener
+  - `scripts/backtest.py` already used DexScreener
+
 ## [0.2.1] - 2026-01-21
 
 ### Added

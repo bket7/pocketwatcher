@@ -18,7 +18,7 @@ import asyncpg
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.settings import settings
-from scripts.gmgn_client import GMGNClient, TokenData
+from scripts.gmgn_client import DexScreenerClient, TokenData
 
 
 async def get_todays_alerts(
@@ -125,21 +125,21 @@ async def generate_report(date: Optional[datetime] = None, skip_gmgn: bool = Fal
         unique_mints = list(set(a["mint"] for a in alerts))
         print(f"Unique tokens: {len(unique_mints)}\n")
 
-        # Fetch current prices from GMGN (if not skipped)
+        # Fetch current prices from DexScreener (if not skipped)
         current_prices: dict[str, TokenData] = {}
 
         if not skip_gmgn:
-            print("Fetching current prices from GMGN...")
+            print("Fetching current prices from DexScreener...")
             try:
-                async with GMGNClient() as client:
+                async with DexScreenerClient() as client:
                     current_prices = await client.get_tokens_batch(
                         unique_mints,
-                        delay=1.5  # Rate limit
+                        delay=0.3  # DexScreener has higher rate limits
                     )
                     success_count = sum(1 for t in current_prices.values() if t.success)
                     print(f"  Fetched {success_count}/{len(unique_mints)} tokens\n")
             except Exception as e:
-                print(f"  Warning: GMGN fetch failed: {e}")
+                print(f"  Warning: DexScreener fetch failed: {e}")
                 print("  Continuing without current prices...\n")
 
         # Calculate performance metrics
