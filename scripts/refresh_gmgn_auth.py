@@ -18,9 +18,9 @@ async def refresh_auth(wait_seconds: int = 60):
     print(" GMGN Auth Refresh")
     print("="*60)
     print(f"\n1. A browser will open to gmgn.ai")
-    print("2. Log in with Twitter/wallet if needed")
-    print(f"3. You have {wait_seconds} seconds to complete login")
-    print("4. Auth will be saved automatically")
+    print("2. Wait for Cloudflare to clear (or log in if needed)")
+    print(f"3. You have {wait_seconds} seconds")
+    print("4. Auth will be saved and tested automatically")
     print("\n" + "="*60 + "\n")
 
     async with async_playwright() as p:
@@ -33,17 +33,52 @@ async def refresh_auth(wait_seconds: int = 60):
         print("Opening GMGN...")
         await page.goto("https://gmgn.ai/sol", wait_until="domcontentloaded", timeout=60000)
 
-        print(f"\nBrowser opened. You have {wait_seconds} seconds to log in...")
-        print("Waiting for login...")
+        print(f"\nBrowser opened. Waiting {wait_seconds} seconds for Cloudflare/login...")
 
-        # Wait for user to complete login
-        for i in range(wait_seconds, 0, -10):
-            print(f"  {i} seconds remaining...")
+        # Wait and periodically test if API works
+        test_mint = "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr"  # POPCAT
+        test_url = f"https://gmgn.ai/defi/quotation/v1/tokens/sol/{test_mint}"
+
+        success = False
+        for i in range(wait_seconds // 10):
             await asyncio.sleep(10)
+            remaining = wait_seconds - (i + 1) * 10
+            print(f"  {remaining}s remaining... testing API...")
 
-        print("\nTime's up! Saving auth state...")
+            # Test if API works now
+            result = await page.evaluate("""
+                async (url) => {
+                    try {
+                        const response = await fetch(url, {
+                            method: 'GET',
+                            credentials: 'include',
+                            headers: { 'Accept': 'application/json' }
+                        });
+                        if (response.status === 200) {
+                            const data = await response.json();
+                            return { success: true, data: data };
+                        }
+                        return { success: false, status: response.status };
+                    } catch (e) {
+                        return { success: false, error: e.message };
+                    }
+                }
+            """, test_url)
 
-        # Save auth state
+            if result.get("success"):
+                token = result.get("data", {}).get("data", {}).get("token", {})
+                print(f"  API WORKING! Got: {token.get('symbol')} @ ${token.get('price')}")
+                success = True
+                break
+            else:
+                print(f"  Not yet... (status: {result.get('status', 'error')})")
+
+        if not success:
+            print("\nAPI still not working after wait period.")
+            print("Try logging in with Twitter/wallet in the browser.")
+
+        # Save auth state regardless
+        print("\nSaving auth state...")
         state = await context.storage_state()
         state['_saved_at'] = str(asyncio.get_event_loop().time())
 
@@ -51,10 +86,11 @@ async def refresh_auth(wait_seconds: int = 60):
         with open(AUTH_PATH, 'w') as f:
             json.dump(state, f, indent=2)
 
-        print(f"\nAuth saved to {AUTH_PATH}")
+        print(f"Auth saved to {AUTH_PATH}")
         print(f"Cookies: {len(state.get('cookies', []))}")
 
         await browser.close()
+        return success
 
     # Test the new auth
     print("\nTesting new auth...")

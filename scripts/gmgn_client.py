@@ -1,8 +1,8 @@
 """
 Token Price Client - Fetches token price/market cap data.
 
-Uses DexScreener API as primary source (free, no auth required).
-GMGN is available as a fallback but requires browser auth.
+Uses GMGN as primary source (better data), DexScreener as fallback.
+GMGN requires browser auth via scripts/refresh_gmgn_auth.py
 """
 
 import asyncio
@@ -393,6 +393,125 @@ def _safe_float(value: Any) -> Optional[float]:
         return float(value)
     except (ValueError, TypeError):
         return None
+
+
+class TokenPriceClient:
+    """
+    Combined client that tries GMGN first, falls back to DexScreener.
+
+    This is the recommended client to use - it provides the best data
+    availability by trying multiple sources.
+    """
+
+    def __init__(self, auth_state_path: Optional[Path] = None):
+        self._gmgn: Optional[GMGNClient] = None
+        self._dexscreener: Optional[DexScreenerClient] = None
+        self._auth_state_path = auth_state_path
+        self._gmgn_available = False
+        self._gmgn_error_count = 0
+        self._stats = {"gmgn_hits": 0, "dexscreener_hits": 0, "failures": 0}
+
+    async def start(self):
+        """Start both clients."""
+        # Always start DexScreener (reliable fallback)
+        self._dexscreener = DexScreenerClient()
+        await self._dexscreener.start()
+
+        # Try to start GMGN
+        try:
+            self._gmgn = GMGNClient(auth_state_path=self._auth_state_path)
+            await self._gmgn.start()
+            # Test if GMGN actually works
+            test_result = await self._gmgn.get_token("So11111111111111111111111111111111111111112")
+            if test_result.success:
+                self._gmgn_available = True
+                print("GMGN: Available")
+            else:
+                print(f"GMGN: Auth expired ({test_result.error[:50]}...)")
+                await self._gmgn.stop()
+                self._gmgn = None
+        except Exception as e:
+            print(f"GMGN: Failed to start ({e})")
+            self._gmgn = None
+
+    async def stop(self):
+        """Stop both clients."""
+        if self._gmgn:
+            await self._gmgn.stop()
+        if self._dexscreener:
+            await self._dexscreener.stop()
+
+    async def __aenter__(self):
+        await self.start()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.stop()
+
+    async def get_token(self, mint: str) -> TokenData:
+        """
+        Fetch token data, trying GMGN first then DexScreener.
+
+        Args:
+            mint: Token mint address
+
+        Returns:
+            TokenData with price and market cap info
+        """
+        # Try GMGN first if available
+        if self._gmgn_available and self._gmgn:
+            result = await self._gmgn.get_token(mint)
+            if result.success:
+                result.source = "gmgn"
+                self._stats["gmgn_hits"] += 1
+                return result
+            else:
+                self._gmgn_error_count += 1
+                # If GMGN fails too many times, disable it
+                if self._gmgn_error_count > 5:
+                    print("GMGN: Too many errors, disabling")
+                    self._gmgn_available = False
+
+        # Fall back to DexScreener
+        if self._dexscreener:
+            result = await self._dexscreener.get_token(mint)
+            if result.success:
+                self._stats["dexscreener_hits"] += 1
+            else:
+                self._stats["failures"] += 1
+            return result
+
+        self._stats["failures"] += 1
+        return TokenData(mint=mint, success=False, error="No clients available")
+
+    async def get_tokens_batch(
+        self,
+        mints: list[str],
+        delay: float = 0.5,
+    ) -> Dict[str, TokenData]:
+        """
+        Fetch multiple tokens with rate limiting.
+
+        Args:
+            mints: List of token mint addresses
+            delay: Delay between requests in seconds
+
+        Returns:
+            Dict mapping mint to TokenData
+        """
+        results = {}
+
+        for i, mint in enumerate(mints):
+            results[mint] = await self.get_token(mint)
+            if i < len(mints) - 1:
+                await asyncio.sleep(delay)
+
+        return results
+
+    @property
+    def stats(self) -> Dict[str, int]:
+        """Get client stats."""
+        return self._stats.copy()
 
 
 async def main():
