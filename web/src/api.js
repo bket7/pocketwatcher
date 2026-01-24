@@ -109,6 +109,10 @@ export async function getTokenStats(mint) {
   return request(`/token/${mint}/stats`);
 }
 
+export async function getAlertsByDate(days = 30) {
+  return request(`/alerts/by-date?days=${days}`);
+}
+
 // ============== Price ==============
 
 // Cache SOL price to avoid hammering the API

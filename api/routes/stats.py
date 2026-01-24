@@ -305,3 +305,73 @@ async def get_token_stats(mint: str):
         buy_sell_ratio_5m=stats.get("buy_sell_ratio", 0),
         is_hot=is_hot,
     )
+
+
+@router.get("/alerts/by-date")
+async def get_alerts_by_date(
+    days: int = Query(default=30, ge=1, le=365),
+):
+    """Get alerts grouped by date for calendar view."""
+    postgres = await get_postgres()
+
+    # First get the dates with counts
+    date_rows = await postgres.fetch(
+        """
+        SELECT
+            DATE(created_at) as date,
+            COUNT(*) as alert_count,
+            COUNT(DISTINCT mint) as unique_tokens
+        FROM alerts
+        WHERE created_at >= NOW() - INTERVAL '%s days'
+        GROUP BY DATE(created_at)
+        ORDER BY date DESC
+        """ % days
+    )
+
+    result = []
+    for date_row in date_rows:
+        date_val = date_row["date"]
+
+        # Get alerts for this date (limit 50)
+        alert_rows = await postgres.fetch(
+            """
+            SELECT id, mint, token_symbol, token_name, trigger_name,
+                   mcap_sol, volume_sol_5m, created_at
+            FROM alerts
+            WHERE DATE(created_at) = $1
+            ORDER BY created_at DESC
+            LIMIT 50
+            """,
+            date_val
+        )
+
+        alerts_list = []
+        for alert in alert_rows:
+            # Handle infinity/nan in mcap
+            mcap = alert.get("mcap_sol")
+            if mcap is not None:
+                try:
+                    if mcap == float('inf') or mcap != mcap:
+                        mcap = None
+                except:
+                    pass
+
+            alerts_list.append({
+                "id": alert["id"],
+                "mint": alert["mint"],
+                "token_symbol": alert.get("token_symbol"),
+                "token_name": alert.get("token_name"),
+                "trigger_name": alert.get("trigger_name"),
+                "mcap_sol": float(mcap) if mcap else None,
+                "volume_sol_5m": float(alert.get("volume_sol_5m") or 0),
+                "created_at": alert["created_at"].isoformat() if alert.get("created_at") else None,
+            })
+
+        result.append({
+            "date": date_val.isoformat(),
+            "alert_count": date_row["alert_count"],
+            "unique_tokens": date_row["unique_tokens"],
+            "alerts": alerts_list,
+        })
+
+    return {"days": result, "total_days": len(result)}

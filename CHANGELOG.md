@@ -5,6 +5,16 @@ All notable changes to Pocketwatcher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-01-24
+
+### Added
+- **Calendar View**: New dashboard page showing alerts grouped by date
+  - Visual calendar with color-coded days based on alert count
+  - Click any day to see all alerts for that date
+  - Summary stats (total alerts, tokens flagged, active days)
+  - Date range selector (7d, 14d, 30d, 60d)
+- **API endpoint `/api/alerts/by-date`**: Returns alerts grouped by date for calendar view
+
 ## [0.2.2] - 2026-01-23
 
 ### Added
