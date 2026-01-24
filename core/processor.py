@@ -276,6 +276,16 @@ class TransactionProcessor:
         if await self.state_manager.is_hot(mint):
             return
 
+        # Minimum mcap filter - skip micro-cap tokens that almost always rug
+        # 500 SOL mcap ≈ $60K at $120/SOL
+        MIN_MCAP_SOL = 500
+        redis_mcap = await self.redis.get_token_mcap(mint)
+        if redis_mcap and redis_mcap.get("mcap_sol"):
+            mcap = redis_mcap["mcap_sol"]
+            if mcap < MIN_MCAP_SOL:
+                logger.info(f"Skipping {mint[:8]} - mcap {mcap:.0f} SOL below minimum {MIN_MCAP_SOL}")
+                return
+
         # Transition to HOT
         await self.state_manager.transition_to_hot(
             mint,

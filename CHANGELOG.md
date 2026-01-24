@@ -5,6 +5,16 @@ All notable changes to Pocketwatcher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-01-24
+
+### Changed
+- **Improved win rate via trigger tuning**: Based on backtest analysis
+  - Disabled `gradual_accumulation` - 36% win rate, -55% avg gain
+  - Disabled `sybil_pattern` - 0% win rate in backtest
+  - Tightened `extreme_ratio` - raised from 3→10 SOL volume, 5→10 buys, added 3+ unique buyers
+- **Added minimum mcap filter**: Tokens below 500 SOL mcap (~$60K) are now skipped
+  - Prevents alerts on micro-cap tokens that almost always rug
+
 ## [0.2.3] - 2026-01-24
 
 ### Added

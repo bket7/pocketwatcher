@@ -23,15 +23,16 @@ triggers:
   - name: extreme_ratio
     conditions:
       - buy_sell_ratio_5m > 10
-      - buy_volume_sol_5m >= 3  # Min 3 SOL volume
-      - buy_count_5m >= 5  # At least 5 buys
+      - buy_volume_sol_5m >= 10  # Raised from 3 to filter noise
+      - buy_count_5m >= 10  # Raised from 5
+      - unique_buyers_5m >= 3  # Require multiple buyers
 
-  # Suspicious new wallet activity
-  - name: sybil_pattern
-    conditions:
-      - new_wallet_pct_5m > 0.7
-      - buy_volume_sol_5m >= 5  # Min 5 SOL volume
-      - buy_count_5m >= 10  # At least 10 buys
+  # DISABLED - 0% win rate in backtest
+  # - name: sybil_pattern
+  #   conditions:
+  #     - new_wallet_pct_5m > 0.7
+  #     - buy_volume_sol_5m >= 5
+  #     - buy_count_5m >= 10
 
   # Top buyers hold majority - ONLY if significant volume
   - name: whale_concentration
@@ -54,7 +55,8 @@ triggers:
       - buy_count_1h >= 30
       - buy_volume_sol_1h >= 20  # Min 20 SOL volume
 
-  - name: gradual_accumulation
-    conditions:
-      - buy_sell_ratio_1h > 5
-      - buy_volume_sol_1h >= 20
+  # DISABLED - 36% win rate, -55% avg gain
+  # - name: gradual_accumulation
+  #   conditions:
+  #     - buy_sell_ratio_1h > 5
+  #     - buy_volume_sol_1h >= 20
