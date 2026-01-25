@@ -152,3 +152,51 @@ class HotTokensResponse(BaseModel):
     """Response with HOT tokens and their stats."""
     tokens: List[TokenStatsModel]
     count: int
+
+
+# ============== Backtest Models ==============
+
+class BacktestResult(BaseModel):
+    """Individual alert backtest result."""
+    mint: str
+    symbol: Optional[str] = None
+    name: Optional[str] = None
+    token_image: Optional[str] = None
+    trigger: str
+    alert_mcap_usd: Optional[float] = None
+    current_mcap_usd: Optional[float] = None
+    gain_pct: Optional[float] = None
+    status: str  # "winner", "loser", "dead"
+    age_hours: float
+    created_at: str
+
+
+class TriggerPerformance(BaseModel):
+    """Per-trigger performance stats."""
+    name: str
+    alerts: int
+    with_price_data: int
+    win_rate: Optional[float] = None
+    avg_gain_pct: Optional[float] = None
+    best_gain_pct: Optional[float] = None
+    worst_gain_pct: Optional[float] = None
+
+
+class BacktestSummary(BaseModel):
+    """Overall backtest stats."""
+    period_hours: int
+    total_alerts: int
+    with_price_data: int
+    dead_tokens: int
+    win_rate: Optional[float] = None
+    avg_gain_pct: Optional[float] = None
+    best: Optional[Dict[str, Any]] = None
+    worst: Optional[Dict[str, Any]] = None
+
+
+class BacktestResponse(BaseModel):
+    """Full backtest API response."""
+    summary: BacktestSummary
+    by_trigger: List[TriggerPerformance]
+    results: List[BacktestResult]
+    cache_age_seconds: Optional[int] = None

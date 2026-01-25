@@ -5,6 +5,20 @@ All notable changes to Pocketwatcher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2026-01-24
+
+### Added
+- **Backtest Dashboard**: New `/backtest` page showing alert performance over time
+  - Summary stats: total alerts, win rate, average gain, best/worst performers
+  - Trigger leaderboard: performance breakdown by trigger type with win rates
+  - Results table: all alerts with current mcap, gain %, and status (winner/loser/dead)
+  - Time range selector (24h, 7d, 30d)
+  - Background cache refresh every 5 minutes for fast page loads
+- **API endpoints**:
+  - `GET /api/backtest?hours=24` - get cached backtest results
+  - `POST /api/backtest/refresh` - force cache refresh
+- **Redis caching**: Token price and backtest result caching to reduce API calls
+
 ## [0.2.4] - 2026-01-24
 
 ### Changed

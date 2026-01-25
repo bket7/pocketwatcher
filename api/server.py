@@ -10,7 +10,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.deps import init_clients, close_clients
-from api.routes import triggers_router, settings_router, stats_router
+from api.routes import triggers_router, settings_router, stats_router, backtest_router
+from api.routes.backtest import start_background_refresh
 
 # Configure logging
 logging.basicConfig(
@@ -22,14 +23,35 @@ logging.basicConfig(
 logger = logging.getLogger("api")
 
 
+# Background task handle
+_background_task = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
+    global _background_task
+
     logger.info("Starting Pocketwatcher Config API...")
     await init_clients()
+
+    # Start background refresh for backtest cache
+    _background_task = asyncio.create_task(start_background_refresh())
+    logger.info("Background backtest refresh started")
+
     logger.info("API server ready")
     yield
+
     logger.info("Shutting down API server...")
+
+    # Cancel background task
+    if _background_task:
+        _background_task.cancel()
+        try:
+            await _background_task
+        except asyncio.CancelledError:
+            pass
+
     await close_clients()
 
 
@@ -62,6 +84,7 @@ app.add_middleware(
 app.include_router(triggers_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
 app.include_router(stats_router, prefix="/api")
+app.include_router(backtest_router, prefix="/api")
 
 
 @app.get("/")

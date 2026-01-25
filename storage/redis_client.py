@@ -416,3 +416,30 @@ class RedisClient:
             "first_seen_slot": int(results[1]) if results[1] else None,
             "cooccurs_with": {m.decode() if isinstance(m, bytes) else m for m in (results[2] or set())},
         }
+
+    # ============== Backtest Cache Operations ==============
+
+    async def get_backtest_cache(self, hours: int) -> Optional[bytes]:
+        """Get cached backtest results for given time period."""
+        return await self.redis.get(f"backtest:cache:{hours}h")
+
+    async def set_backtest_cache(self, hours: int, data: bytes, ttl_seconds: int = 300):
+        """Cache backtest results."""
+        await self.redis.set(f"backtest:cache:{hours}h", data, ex=ttl_seconds)
+
+    async def get_backtest_timestamp(self, hours: int) -> Optional[int]:
+        """Get timestamp when backtest cache was last updated."""
+        result = await self.redis.get(f"backtest:timestamp:{hours}h")
+        return int(result) if result else None
+
+    async def set_backtest_timestamp(self, hours: int, timestamp: int, ttl_seconds: int = 300):
+        """Set backtest cache timestamp."""
+        await self.redis.set(f"backtest:timestamp:{hours}h", str(timestamp), ex=ttl_seconds)
+
+    async def get_token_price_cache(self, mint: str) -> Optional[bytes]:
+        """Get cached token price data."""
+        return await self.redis.get(f"price:cache:{mint}")
+
+    async def set_token_price_cache(self, mint: str, data: bytes, ttl_seconds: int = 3600):
+        """Cache token price data (1 hour default)."""
+        await self.redis.set(f"price:cache:{mint}", data, ex=ttl_seconds)

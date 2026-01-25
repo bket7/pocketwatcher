@@ -113,6 +113,18 @@ export async function getAlertsByDate(days = 30) {
   return request(`/alerts/by-date?days=${days}`);
 }
 
+// ============== Backtest ==============
+
+export async function getBacktest(hours = 24) {
+  return request(`/backtest?hours=${hours}`);
+}
+
+export async function refreshBacktest(hours = 24) {
+  return request(`/backtest/refresh?hours=${hours}`, {
+    method: 'POST',
+  });
+}
+
 // ============== Price ==============
 
 // Cache SOL price to avoid hammering the API

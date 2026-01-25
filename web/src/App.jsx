@@ -1,6 +1,7 @@
 import { Routes, Route, NavLink } from 'react-router-dom'
 import Dashboard from './pages/Dashboard'
 import Calendar from './pages/Calendar'
+import Backtest from './pages/Backtest'
 import Triggers from './pages/Triggers'
 import Settings from './pages/Settings'
 
@@ -34,6 +35,7 @@ export default function App() {
           <nav className="flex gap-2">
             <NavItem to="/">Dashboard</NavItem>
             <NavItem to="/calendar">Calendar</NavItem>
+            <NavItem to="/backtest">Backtest</NavItem>
             <NavItem to="/triggers">Triggers</NavItem>
             <NavItem to="/settings">Settings</NavItem>
           </nav>
@@ -45,6 +47,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/calendar" element={<Calendar />} />
+          <Route path="/backtest" element={<Backtest />} />
           <Route path="/triggers" element={<Triggers />} />
           <Route path="/settings" element={<Settings />} />
         </Routes>
