@@ -260,6 +260,7 @@ class Application:
     def _tx_to_dict(self, tx) -> dict:
         """Convert transaction to dict for serialization."""
         import base58
+        import time
 
         # Handle both protobuf and dict formats
         if isinstance(tx, dict):
@@ -308,10 +309,17 @@ class Application:
                         "amount": bal.ui_token_amount.amount if bal.ui_token_amount else "0",
                     })
 
+            # Estimate block_time from slot
+            # Yellowstone doesn't include block_time in transaction updates.
+            # We use current timestamp since we're processing in real-time.
+            # For historical accuracy, block_time = reference_time + (slot - reference_slot) * 0.4
+            # But current time is accurate enough for real-time streaming.
+            block_time = int(time.time())
+
             return {
                 "signature": signature,
                 "slot": tx.slot,
-                "block_time": 0,  # Not available in this proto structure
+                "block_time": block_time,
                 "fee_payer": fee_payer,
                 "account_keys": account_keys,
                 "pre_token_balances": pre_token_balances,
