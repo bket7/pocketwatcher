@@ -225,6 +225,7 @@ class Application:
             asyncio.create_task(self._run_ingest()),
             asyncio.create_task(self._run_consumer()),
             asyncio.create_task(self._run_detection_loop()),
+            asyncio.create_task(self._run_stats_loop()),
             asyncio.create_task(self._run_maintenance_loop()),
             asyncio.create_task(self.health_checker.health_check_loop()),
         ]
@@ -401,13 +402,13 @@ class Application:
                 logger.error(f"Detection loop error: {e}")
                 await asyncio.sleep(5)
 
-    async def _run_maintenance_loop(self):
-        """Run periodic maintenance tasks."""
-        logger.info("Starting maintenance loop...")
+    async def _run_stats_loop(self):
+        """Publish live stats to Redis every 5 seconds for real-time dashboard."""
+        logger.info("Starting stats loop (5s interval)...")
 
         while self._running:
             try:
-                await asyncio.sleep(60)  # Run every minute
+                await asyncio.sleep(5)
 
                 # Update metrics
                 stream_info = await self.redis.get_stream_info()
@@ -416,16 +417,8 @@ class Application:
                 hot_tokens = await self.processor.state_manager.get_hot_tokens()
                 self.metrics.set_hot_token_count(len(hot_tokens))
 
-                # Log stats and publish to Redis for API
+                # Publish stats to Redis for API
                 summary = self.metrics.get_summary()
-                logger.info(
-                    f"Stats: {summary['tx_per_second']:.1f} tx/s, "
-                    f"{summary['swaps_detected']} swaps, "
-                    f"{summary['hot_tokens_current']} HOT tokens, "
-                    f"lag: {summary['processing_lag_seconds']:.1f}s"
-                )
-
-                # Publish stats to Redis so API can read them
                 await self.redis.redis.set(
                     "pocketwatcher:live_stats",
                     json.dumps({
@@ -439,7 +432,29 @@ class Application:
                         "alerts_sent": summary["alerts_sent"],
                         "updated_at": time.time(),
                     }),
-                    ex=120  # Expire after 2 minutes if worker stops
+                    ex=30  # Expire after 30s if worker stops
+                )
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug(f"Stats loop error: {e}")
+
+    async def _run_maintenance_loop(self):
+        """Run periodic maintenance tasks (cleanup, refresh, flush)."""
+        logger.info("Starting maintenance loop (60s interval)...")
+
+        while self._running:
+            try:
+                await asyncio.sleep(60)
+
+                # Log stats
+                summary = self.metrics.get_summary()
+                logger.info(
+                    f"Stats: {summary['tx_per_second']:.1f} tx/s, "
+                    f"{summary['swaps_detected']} swaps, "
+                    f"{summary['hot_tokens_current']} HOT tokens, "
+                    f"lag: {summary['processing_lag_seconds']:.1f}s"
                 )
 
                 # Cleanup inactive mints
