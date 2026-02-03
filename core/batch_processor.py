@@ -61,9 +61,9 @@ class BatchProcessor:
         # Local state cache (token -> state)
         self._state_cache: Dict[str, TokenState] = {}
 
-        # Batch-level accumulation
-        self._pending_delta_records: List[TxDeltaRecord] = []
-        self._pending_mint_events: List[MintTouchedEvent] = []
+        # Last batch sizes (for stats only)
+        self._last_pending_delta_count = 0
+        self._last_pending_event_count = 0
 
     async def process_batch(
         self,
@@ -78,17 +78,26 @@ class BatchProcessor:
         """
         start_time = time.time()
 
+        pending_delta_records: List[TxDeltaRecord] = []
+        pending_mint_events: List[MintTouchedEvent] = []
+
         for tx_data in transactions:
-            await self._process_single(tx_data, ctx)
+            await self._process_single(
+                tx_data,
+                ctx,
+                pending_delta_records,
+                pending_mint_events,
+            )
 
         # Batch write delta records and mint events (local I/O, not Redis)
-        if self.delta_log and self._pending_delta_records:
-            await self.delta_log.append_batch(self._pending_delta_records)
-            self._pending_delta_records = []
+        if self.delta_log and pending_delta_records:
+            await self.delta_log.append_batch(pending_delta_records)
 
-        if self.event_log and self._pending_mint_events:
-            await self.event_log.append_batch(self._pending_mint_events)
-            self._pending_mint_events = []
+        if self.event_log and pending_mint_events:
+            await self.event_log.append_batch(pending_mint_events)
+
+        self._last_pending_delta_count = len(pending_delta_records)
+        self._last_pending_event_count = len(pending_mint_events)
 
         # Record batch processing time
         elapsed = time.time() - start_time
@@ -99,6 +108,8 @@ class BatchProcessor:
         self,
         tx_data: Dict[str, Any],
         ctx,  # BatchContext
+        pending_delta_records: List[TxDeltaRecord],
+        pending_mint_events: List[MintTouchedEvent],
     ):
         """Process a single transaction within a batch."""
         self._processed_count += 1
@@ -129,7 +140,7 @@ class BatchProcessor:
             mints_touched=mints_touched,
             programs_invoked=programs_invoked,
         )
-        self._pending_mint_events.append(mint_event)
+        pending_mint_events.append(mint_event)
 
         # Create TxDeltaRecord (accumulate for batch write)
         delta_record = TxDeltaRecord(
@@ -143,7 +154,7 @@ class BatchProcessor:
             mints_touched=mints_touched,
             tx_fee=tx_data.get("fee", 0),
         )
-        self._pending_delta_records.append(delta_record)
+        pending_delta_records.append(delta_record)
 
         # Update metrics
         if self.metrics:
@@ -239,12 +250,12 @@ class BatchProcessor:
             ),
             "delta_builder": self.delta_builder.get_stats(),
             "inference": self.inference.get_stats(),
-            "pending_deltas": len(self._pending_delta_records),
-            "pending_events": len(self._pending_mint_events),
+            "pending_deltas": self._last_pending_delta_count,
+            "pending_events": self._last_pending_event_count,
             "state_cache_size": len(self._state_cache),
         }
 
     def reset_pending(self):
         """Reset pending batches (called on error)."""
-        self._pending_delta_records = []
-        self._pending_mint_events = []
+        self._last_pending_delta_count = 0
+        self._last_pending_event_count = 0

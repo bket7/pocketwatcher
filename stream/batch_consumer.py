@@ -108,6 +108,21 @@ class BatchConsumer:
         """Signal to stop consuming."""
         self._running = False
 
+    @staticmethod
+    def _msg_id_to_str(msg_id: Any) -> str:
+        if isinstance(msg_id, bytes):
+            return msg_id.decode(errors="ignore")
+        return str(msg_id)
+
+    @classmethod
+    def _normalize_signature(cls, sig: Any, msg_id: Any) -> str:
+        if isinstance(sig, bytes):
+            sig = sig.decode(errors="ignore")
+        sig_str = str(sig).strip() if sig is not None else ""
+        if not sig_str or sig_str.lower() in {"unknown", "error"}:
+            sig_str = f"id:{cls._msg_id_to_str(msg_id)}"
+        return sig_str
+
     async def _process_batch(
         self,
         on_batch: Callable,
@@ -144,10 +159,19 @@ class BatchConsumer:
         for msg_id, raw_data in raw_messages:
             try:
                 tx_data = msgpack.unpackb(raw_data)
-                sig = tx_data.get("signature", "")
-                if sig:
-                    parsed_txs.append((msg_id, tx_data))
-                    signatures.append(sig)
+                sig = tx_data.get("signature") if isinstance(tx_data, dict) else None
+                if sig is None and isinstance(tx_data, dict):
+                    sig = tx_data.get(b"signature")
+                normalized_sig = self._normalize_signature(sig, msg_id)
+                should_set_sig = (
+                    isinstance(sig, bytes)
+                    or not sig
+                    or (isinstance(sig, str) and sig.strip().lower() in {"unknown", "error"})
+                )
+                if isinstance(tx_data, dict) and should_set_sig:
+                    tx_data["signature"] = normalized_sig
+                parsed_txs.append((msg_id, tx_data))
+                signatures.append(normalized_sig)
             except Exception as e:
                 self._error_count += 1
                 logger.debug(f"Failed to parse message: {e}")

@@ -210,12 +210,18 @@ class DeltaLog:
         """Delete log files older than retention period."""
         cutoff_time = int(time.time()) - MAX_FILE_AGE_SECONDS
         deleted = 0
+        current_bucket = self._current_file_time
 
         for file_path in self.data_dir.glob("*.msgpack.zlib"):
             try:
                 name_part = file_path.stem.replace(".msgpack", "")
                 file_time = datetime.strptime(name_part, "%Y%m%d_%H%M%S")
                 file_timestamp = int(file_time.timestamp())
+                file_bucket = file_timestamp // ROTATION_INTERVAL_SECONDS
+
+                # Skip currently open file (avoid Windows lock errors)
+                if current_bucket and file_bucket == current_bucket:
+                    continue
 
                 if file_timestamp < cutoff_time:
                     file_path.unlink()

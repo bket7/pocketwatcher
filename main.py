@@ -329,20 +329,29 @@ class Application:
         # tx.transaction.transaction = solana.storage.ConfirmedBlock.Transaction
         # tx.transaction.meta = TransactionStatusMeta
         # tx.slot = uint64
+        signature = ""
         try:
-            tx_info = tx.transaction  # SubscribeUpdateTransactionInfo
-            inner_tx = tx_info.transaction  # The actual Transaction proto
-            meta = tx_info.meta  # TransactionStatusMeta
+            tx_info = getattr(tx, "transaction", None)  # SubscribeUpdateTransactionInfo
+            inner_tx = getattr(tx_info, "transaction", None) if tx_info else None
+            meta = getattr(tx_info, "meta", None) if tx_info else None
 
-            # Convert signature bytes to base58
-            sig_bytes = bytes(tx_info.signature)
-            signature = base58.b58encode(sig_bytes).decode() if sig_bytes else ""
+            # Convert signature bytes to base58 (best-effort)
+            if tx_info and hasattr(tx_info, "signature"):
+                try:
+                    sig_bytes = bytes(tx_info.signature)
+                    signature = base58.b58encode(sig_bytes).decode() if sig_bytes else ""
+                except Exception as e:
+                    logger.debug(f"Failed to decode signature: {e}")
 
             # Get account keys from the transaction message
             account_keys = []
-            if inner_tx and inner_tx.message:
-                for k in inner_tx.message.account_keys:
-                    account_keys.append(base58.b58encode(bytes(k)).decode())
+            message = getattr(inner_tx, "message", None) if inner_tx else None
+            if message and getattr(message, "account_keys", None):
+                try:
+                    for k in message.account_keys:
+                        account_keys.append(base58.b58encode(bytes(k)).decode())
+                except Exception as e:
+                    logger.debug(f"Failed to parse account keys: {e}")
 
             # Get fee payer (first account key)
             fee_payer = account_keys[0] if account_keys else ""
@@ -351,45 +360,53 @@ class Application:
             pre_token_balances = []
             post_token_balances = []
             if meta:
-                for bal in meta.pre_token_balances:
-                    pre_token_balances.append({
-                        "account_index": bal.account_index,
-                        "mint": bal.mint,  # Already a string
-                        "owner": bal.owner,  # Already a string
-                        "amount": bal.ui_token_amount.amount if bal.ui_token_amount else "0",
-                    })
-                for bal in meta.post_token_balances:
-                    post_token_balances.append({
-                        "account_index": bal.account_index,
-                        "mint": bal.mint,  # Already a string
-                        "owner": bal.owner,  # Already a string
-                        "amount": bal.ui_token_amount.amount if bal.ui_token_amount else "0",
-                    })
+                try:
+                    for bal in getattr(meta, "pre_token_balances", []):
+                        pre_token_balances.append({
+                            "account_index": getattr(bal, "account_index", 0),
+                            "mint": getattr(bal, "mint", ""),  # Already a string
+                            "owner": getattr(bal, "owner", ""),  # Already a string
+                            "amount": bal.ui_token_amount.amount if getattr(bal, "ui_token_amount", None) else "0",
+                        })
+                except Exception as e:
+                    logger.debug(f"Failed to parse pre_token_balances: {e}")
+                try:
+                    for bal in getattr(meta, "post_token_balances", []):
+                        post_token_balances.append({
+                            "account_index": getattr(bal, "account_index", 0),
+                            "mint": getattr(bal, "mint", ""),  # Already a string
+                            "owner": getattr(bal, "owner", ""),  # Already a string
+                            "amount": bal.ui_token_amount.amount if getattr(bal, "ui_token_amount", None) else "0",
+                        })
+                except Exception as e:
+                    logger.debug(f"Failed to parse post_token_balances: {e}")
 
             # Estimate block_time from slot
             # Yellowstone doesn't include block_time in transaction updates.
             # We use current timestamp since we're processing in real-time.
-            # For historical accuracy, block_time = reference_time + (slot - reference_slot) * 0.4
-            # But current time is accurate enough for real-time streaming.
             block_time = int(time.time())
 
             return {
                 "signature": signature,
-                "slot": tx.slot,
+                "slot": getattr(tx, "slot", 0),
                 "block_time": block_time,
                 "fee_payer": fee_payer,
                 "account_keys": account_keys,
                 "pre_token_balances": pre_token_balances,
                 "post_token_balances": post_token_balances,
-                "pre_balances": list(meta.pre_balances) if meta else [],
-                "post_balances": list(meta.post_balances) if meta else [],
-                "fee": meta.fee if meta else 0,
+                "pre_balances": list(getattr(meta, "pre_balances", [])) if meta else [],
+                "post_balances": list(getattr(meta, "post_balances", [])) if meta else [],
+                "fee": getattr(meta, "fee", 0) if meta else 0,
                 "inner_instructions": [],  # Complex to convert, skip for now
             }
         except Exception as e:
             logger.warning(f"Failed to convert tx to dict: {e}")
             # Don't try to stringify protobuf - it can cause recursion
-            return {"signature": "unknown", "error": str(e)}
+            return {
+                "signature": signature,
+                "slot": getattr(tx, "slot", 0),
+                "error": str(e),
+            }
 
     async def _run_consumer(self):
         """Run the Redis stream consumer."""
