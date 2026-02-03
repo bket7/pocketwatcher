@@ -18,10 +18,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `idx_swap_events_block_time` for swap count queries
 - **CI workflow**: GitHub Actions workflow for lint, test, and frontend build
 - **Production runbook**: `docs/RUNBOOK.md` with start/stop/backup/restore procedures
+- **Alembic database migrations**: Versioned schema changes with async PostgreSQL support
+  - Initial migration captures existing schema
+  - `alembic upgrade head` for new deployments
+- **Windows service management**: NSSM-based Windows services
+  - `scripts/windows/install-services.ps1` - Install worker and API services
+  - `scripts/windows/manage-services.ps1` - Start/stop/restart/status
+  - `scripts/windows/backup.ps1` - Automated PostgreSQL and Redis backup
+- **Test coverage**: Unit and integration tests
+  - `test_alerting.py` - AlertFormatter tests (Discord embed, Telegram, risk levels)
+  - `test_integration.py` - Discord retry, pending message claiming, graceful shutdown
+- **Static file serving**: API server serves built frontend from `web/dist`
+  - SPA routing support for client-side routes
 
 ### Changed
 - API server now reads host/port from `API_HOST`/`API_PORT` env vars
 - pyproject.toml version aligned with CHANGELOG
+- **CTO scoring enhanced**: Uses both in-memory union-find and historical postgres cluster_id data
+- **Vite production build**: Vendor chunk splitting and terser minification
+
+### Fixed
+- **block_time handling**: Uses current timestamp instead of 0 (Yellowstone gRPC doesn't include block_time)
 
 ## [0.2.6] - 2026-02-03
 
