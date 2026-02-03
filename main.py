@@ -169,6 +169,7 @@ class Application:
                 swap_queue=self.swap_queue,
                 metrics=self.metrics,
                 known_programs=self.yellowstone.known_programs,
+                counter_manager=self.processor.counter_manager,  # Share counter_manager for detection loop
             )
             self.batch_consumer = MultiBatchConsumer(
                 self.redis,

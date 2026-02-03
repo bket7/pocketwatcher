@@ -33,6 +33,7 @@ class BatchProcessor:
         swap_queue: Optional[SwapEventQueue] = None,
         metrics=None,
         known_programs: Optional[Set[str]] = None,
+        counter_manager=None,
     ):
         # Storage (local writes only)
         self.delta_log = delta_log
@@ -41,6 +42,9 @@ class BatchProcessor:
 
         # Metrics
         self.metrics = metrics
+
+        # Counter manager for tracking active mints (for detection loop)
+        self.counter_manager = counter_manager
 
         # Known programs for unknown program discovery
         self.known_programs = known_programs or set()
@@ -190,6 +194,10 @@ class BatchProcessor:
             quote_amount_sol=quote_sol,
             side=swap.side.value,
         )
+
+        # Register mint with counter_manager for detection loop to see
+        if self.counter_manager:
+            self.counter_manager._active_mints.add(mint)
 
         # Mark token as at least WARM in local cache
         if mint not in self._state_cache:
