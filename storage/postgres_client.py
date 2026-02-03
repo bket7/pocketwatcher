@@ -162,6 +162,18 @@ class PostgresClient:
                 ON alerts(mint, created_at DESC)
             """)
 
+            # Index for dashboard queries filtering by time
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_alerts_created_at
+                ON alerts(created_at DESC)
+            """)
+
+            # Index for swap count queries by time
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_swap_events_block_time
+                ON swap_events(block_time DESC)
+            """)
+
             # Add price/mcap columns to alerts table (migration)
             await conn.execute("""
                 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS price_sol DOUBLE PRECISION;
