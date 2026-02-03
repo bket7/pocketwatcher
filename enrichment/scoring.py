@@ -36,11 +36,27 @@ class CTOScorer:
     Scores CTO (Cabal/Team/Organization) likelihood for a token.
 
     Components:
-    - Concentration: How concentrated is buying among top wallets?
-    - Clustering: Are top buyers in the same cluster (linked wallets)?
-    - Timing: Are buys suspiciously synchronized?
-    - New wallets: High percentage of newly-seen wallets?
-    - Ratio: Extreme buy/sell ratio (all buying, no selling)?
+    - Concentration (25%): How concentrated is buying among top wallets?
+    - Clustering (30%): Are top buyers in the same cluster (linked wallets)?
+    - Timing (15%): Are buys suspiciously synchronized?
+    - New wallets (15%): High percentage of newly-seen wallets?
+    - Ratio (15%): Extreme buy/sell ratio (all buying, no selling)?
+
+    Data Sources:
+    - Rolling counters: Real-time buy/sell stats from Redis
+    - Wallet clustering: Union-find from funding relationships
+    - Historical clusters: cluster_id from postgres wallet profiles
+
+    Score Interpretation:
+    - 0.7+: HIGH risk - strong CTO/coordination signals
+    - 0.4-0.7: MEDIUM risk - some coordination patterns
+    - 0.2-0.4: LOW risk - minor suspicious patterns
+    - <0.2: MINIMAL risk - appears organic
+
+    Confidence is reduced when:
+    - Low sample size (<20 buys)
+    - Few top buyers (<5)
+    - Low volume (<5 SOL)
     """
 
     # Weights for each component
@@ -135,7 +151,15 @@ class CTOScorer:
         top_buyers: List[Dict],
         evidence: List[str]
     ) -> float:
-        """Score based on cluster membership of top buyers."""
+        """
+        Score based on cluster membership of top buyers.
+
+        Uses two data sources:
+        1. In-memory clustering from current session swaps
+        2. Historical cluster_id data from postgres wallet profiles
+
+        Higher scores indicate coordinated buying from linked wallets.
+        """
         if not top_buyers:
             return 0.0
 
@@ -145,21 +169,50 @@ class CTOScorer:
         if not wallets:
             return 0.0
 
-        # Get clusters for these wallets
+        # Get clusters from in-memory union-find
         clusters = self.clusterer.get_cluster_for_wallets(wallets)
 
-        if not clusters:
-            return 0.0
+        # Also check for historical cluster_ids in the buyer data
+        # (postgres wallet profiles have cluster_id from previous enrichment)
+        historical_clusters: Dict[str, List[str]] = {}
+        for buyer in top_buyers:
+            cluster_id = buyer.get("cluster_id")
+            wallet = buyer.get("wallet") or buyer.get("user_wallet")
+            if cluster_id and wallet:
+                if cluster_id not in historical_clusters:
+                    historical_clusters[cluster_id] = []
+                historical_clusters[cluster_id].append(wallet)
 
-        # Calculate what % of wallets are in multi-member clusters
-        large_cluster_wallets = sum(c.size for c in clusters if c.size >= 2)
+        # Count wallets in multi-member clusters
+        large_cluster_wallets = 0
+
+        # From in-memory clusters
+        for c in clusters:
+            if c.size >= 2:
+                large_cluster_wallets += c.size
+
+        # From historical clusters (avoid double counting)
+        wallets_in_memory_clusters = set()
+        for c in clusters:
+            if c.size >= 2:
+                wallets_in_memory_clusters.update(c.members)
+
+        for cluster_id, members in historical_clusters.items():
+            if len(members) >= 2:
+                # Only count if not already counted from in-memory
+                new_members = [m for m in members if m not in wallets_in_memory_clusters]
+                large_cluster_wallets += len(new_members)
+
         cluster_pct = large_cluster_wallets / len(wallets) if wallets else 0
 
         if cluster_pct >= 0.5:
-            max_cluster = max(clusters, key=lambda c: c.size)
+            max_size = max(
+                (c.size for c in clusters if c.size >= 2),
+                default=max((len(m) for m in historical_clusters.values()), default=1)
+            )
             evidence.append(
                 f"High clustering: {cluster_pct:.0%} in linked wallets, "
-                f"largest cluster = {max_cluster.size}"
+                f"largest cluster = {max_size}"
             )
             return min(1.0, cluster_pct + 0.2)
         elif cluster_pct >= 0.2:
