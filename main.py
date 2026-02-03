@@ -430,23 +430,34 @@ class Application:
                 logger.error(f"Maintenance loop error: {e}")
 
 
+def setup_signal_handlers(app: Application):
+    """Setup cross-platform signal handlers for graceful shutdown."""
+    def handler(signum, frame):
+        sig_name = signal.Signals(signum).name
+        logger.info(f"Received {sig_name}, initiating graceful shutdown...")
+        # Schedule shutdown in the event loop
+        try:
+            loop = asyncio.get_running_loop()
+            loop.call_soon_threadsafe(lambda: asyncio.create_task(app.stop()))
+        except RuntimeError:
+            # No running loop yet
+            pass
+
+    # These work on both Unix and Windows
+    signal.signal(signal.SIGINT, handler)
+    signal.signal(signal.SIGTERM, handler)
+
+    # Windows-specific: SIGBREAK (Ctrl+Break)
+    if hasattr(signal, 'SIGBREAK'):
+        signal.signal(signal.SIGBREAK, handler)
+
+
 async def main(use_mock: bool = False):
     """Main entry point."""
     app = Application(use_mock_stream=use_mock)
 
-    # Setup signal handlers
-    loop = asyncio.get_event_loop()
-
-    def signal_handler():
-        logger.info("Received shutdown signal")
-        asyncio.create_task(app.stop())
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, signal_handler)
-        except NotImplementedError:
-            # Windows doesn't support add_signal_handler
-            pass
+    # Setup cross-platform signal handlers
+    setup_signal_handlers(app)
 
     try:
         await app.start()

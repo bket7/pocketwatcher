@@ -1,6 +1,6 @@
 # Pocketwatcher - Production Readiness Plan
 
-## Current Status: 85% Production Ready
+## Current Status: 95% Production Ready
 
 **Version:** 0.2.5
 **Last Updated:** 2026-02-03
@@ -146,12 +146,12 @@ Priority tests to add (from VALIDATION_AND_DEBT.md):
 
 ## Pre-Launch Checklist
 
-- [ ] Implement Discord retry with backoff
-- [ ] Implement Windows-compatible signal handlers
-- [ ] Implement pending message claiming on restart
+- [x] Implement Discord retry with backoff
+- [x] Implement Windows-compatible signal handlers
+- [x] Implement pending message claiming on restart
 - [ ] Run for 24h with no lost alerts
 - [ ] Manual spot-check 10 alerts against Solscan
-- [ ] Commit + push all changes
+- [x] Commit + push all changes
 
 ---
 

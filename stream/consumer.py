@@ -9,6 +9,9 @@ from storage.redis_client import RedisClient, CONSUMER_GROUP, TX_STREAM
 
 logger = logging.getLogger(__name__)
 
+# How long a message must be idle before we claim it (30 seconds)
+PENDING_CLAIM_MIN_IDLE_MS = 30000
+
 
 class StreamConsumer:
     """
@@ -35,6 +38,81 @@ class StreamConsumer:
         self._error_count = 0
         self._start_time = 0
 
+    async def _claim_pending_messages(
+        self,
+        on_message: Callable,
+        on_error: Optional[Callable] = None,
+    ) -> int:
+        """
+        Claim and process pending messages from previous runs.
+
+        Returns the number of messages processed.
+        """
+        processed = 0
+        try:
+            # Get pending messages for this consumer
+            pending = await self.redis.redis.xpending_range(
+                TX_STREAM,
+                CONSUMER_GROUP,
+                min="-",
+                max="+",
+                count=1000,
+                consumername=self.consumer_name,
+            )
+
+            if not pending:
+                return 0
+
+            # Filter to messages idle > threshold
+            idle_ids = [
+                p["message_id"]
+                for p in pending
+                if p.get("time_since_delivered", 0) > PENDING_CLAIM_MIN_IDLE_MS
+            ]
+
+            if not idle_ids:
+                return 0
+
+            logger.info(f"Claiming {len(idle_ids)} pending messages idle > {PENDING_CLAIM_MIN_IDLE_MS}ms")
+
+            # Claim the messages
+            claimed = await self.redis.redis.xclaim(
+                TX_STREAM,
+                CONSUMER_GROUP,
+                self.consumer_name,
+                min_idle_time=PENDING_CLAIM_MIN_IDLE_MS,
+                message_ids=idle_ids,
+            )
+
+            if not claimed:
+                return 0
+
+            # Process claimed messages
+            ack_ids = []
+            for msg_id, fields in claimed:
+                try:
+                    raw_data = fields.get(b"data") or fields.get("data")
+                    if raw_data:
+                        await on_message(msg_id, raw_data)
+                        processed += 1
+                    ack_ids.append(msg_id)
+                except Exception as e:
+                    logger.error(f"Error processing pending message {msg_id}: {e}")
+                    if on_error:
+                        await on_error(msg_id, e)
+                    ack_ids.append(msg_id)
+
+            # Acknowledge processed messages
+            if ack_ids:
+                await self.redis.ack_messages(ack_ids)
+
+            logger.info(f"Processed {processed} pending messages")
+
+        except Exception as e:
+            logger.error(f"Error claiming pending messages: {e}")
+
+        return processed
+
     async def start(
         self,
         on_message: Callable,
@@ -51,6 +129,9 @@ class StreamConsumer:
         self._start_time = time.time()
 
         logger.info(f"Consumer {self.consumer_name} starting...")
+
+        # Process any pending messages from previous runs first
+        await self._claim_pending_messages(on_message, on_error)
 
         while self._running:
             try:

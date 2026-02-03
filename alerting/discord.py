@@ -60,7 +60,8 @@ class DiscordAlerter:
         """
         Send an alert to Discord.
 
-        Returns True if successful.
+        Returns True if successful. Retries with exponential backoff on
+        transient failures (network errors, 5xx responses).
         """
         if not self.webhook_url or not self._http_client:
             return False
@@ -73,33 +74,61 @@ class DiscordAlerter:
         # Format the message
         payload = AlertFormatter.format_discord_embed(alert, cto_score)
 
+        max_retries = 3
+        retry_delays = [1, 2, 4]  # exponential backoff
+
         async with self._semaphore:
-            try:
-                response = await self._http_client.post(
-                    self.webhook_url,
-                    json=payload
-                )
+            for attempt in range(max_retries):
+                try:
+                    response = await self._http_client.post(
+                        self.webhook_url,
+                        json=payload
+                    )
 
-                if response.status_code == 429:
-                    # Rate limited by Discord
-                    retry_after = response.json().get("retry_after", 5)
-                    logger.warning(f"Discord rate limited, retry after {retry_after}s")
-                    await asyncio.sleep(retry_after)
-                    return await self.send_alert(alert, cto_score)
+                    if response.status_code == 429:
+                        # Rate limited by Discord
+                        retry_after = response.json().get("retry_after", 5)
+                        logger.warning(f"Discord rate limited, retry after {retry_after}s")
+                        await asyncio.sleep(retry_after)
+                        continue
 
-                response.raise_for_status()
-                self._sent_count += 1
-                logger.info(f"Discord alert sent for {alert.mint[:8]}")
-                return True
+                    if response.status_code >= 500:
+                        # Server error - retry
+                        if attempt < max_retries - 1:
+                            logger.warning(f"Discord server error {response.status_code}, retrying in {retry_delays[attempt]}s")
+                            await asyncio.sleep(retry_delays[attempt])
+                            continue
+                        else:
+                            self._error_count += 1
+                            logger.error(f"Discord server error after {max_retries} attempts: {response.status_code}")
+                            return False
 
-            except httpx.HTTPStatusError as e:
-                self._error_count += 1
-                logger.error(f"Discord webhook error: {e.response.status_code}")
-                return False
-            except Exception as e:
-                self._error_count += 1
-                logger.error(f"Discord send error: {e}")
-                return False
+                    response.raise_for_status()
+                    self._sent_count += 1
+                    logger.info(f"Discord alert sent for {alert.mint[:8]}")
+                    return True
+
+                except (httpx.ConnectError, httpx.TimeoutException) as e:
+                    # Network errors - retry
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Discord network error, retrying in {retry_delays[attempt]}s: {e}")
+                        await asyncio.sleep(retry_delays[attempt])
+                        continue
+                    else:
+                        self._error_count += 1
+                        logger.error(f"Discord send failed after {max_retries} attempts: {e}")
+                        return False
+                except httpx.HTTPStatusError as e:
+                    # Client errors (4xx except 429) - don't retry
+                    self._error_count += 1
+                    logger.error(f"Discord webhook error: {e.response.status_code}")
+                    return False
+                except Exception as e:
+                    self._error_count += 1
+                    logger.error(f"Discord send error: {e}")
+                    return False
+
+        return False
 
     def _check_rate_limit(self) -> bool:
         """Check if we're within rate limit."""
