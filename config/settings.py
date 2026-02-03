@@ -88,6 +88,20 @@ class Settings(BaseSettings):
         description="Minimum confidence for SwapEventFull"
     )
 
+    # API Server
+    api_host: str = Field(
+        default="127.0.0.1",
+        description="API server bind host (default localhost for security)"
+    )
+    api_port: int = Field(
+        default=8080,
+        description="API server bind port"
+    )
+    api_token: Optional[str] = Field(
+        default=None,
+        description="Optional API token for authentication"
+    )
+
     # Backpressure thresholds
     degraded_lag_seconds: int = Field(
         default=5,

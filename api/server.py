@@ -4,14 +4,39 @@ import asyncio
 import logging
 import sys
 from contextlib import asynccontextmanager
+from typing import Optional
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from api.deps import init_clients, close_clients
-from api.routes import triggers_router, settings_router, stats_router, backtest_router
+from api.routes import triggers_router, settings_router, stats_router, backtest_router, metrics_router
 from api.routes.backtest import start_background_refresh
+from config.settings import settings
+
+
+class APITokenMiddleware(BaseHTTPMiddleware):
+    """Middleware to verify API token on mutating requests."""
+
+    async def dispatch(self, request: Request, call_next):
+        # Skip authentication if no token configured
+        if not settings.api_token:
+            return await call_next(request)
+
+        # Only check token for mutating methods on /api routes
+        if request.method in ("PUT", "POST", "DELETE") and request.url.path.startswith("/api"):
+            token = request.headers.get("X-API-Token")
+            if token != settings.api_token:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid or missing API token"},
+                    headers={"WWW-Authenticate": "API-Key"},
+                )
+
+        return await call_next(request)
 
 # Configure logging
 logging.basicConfig(
@@ -62,6 +87,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# API Token authentication middleware (must be added before CORS)
+app.add_middleware(APITokenMiddleware)
+
 # CORS middleware - allow dashboard frontend
 app.add_middleware(
     CORSMiddleware,
@@ -85,6 +113,7 @@ app.include_router(triggers_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
 app.include_router(stats_router, prefix="/api")
 app.include_router(backtest_router, prefix="/api")
+app.include_router(metrics_router)  # No prefix - /metrics is standard
 
 
 @app.get("/")
@@ -97,12 +126,19 @@ async def root():
     }
 
 
-async def run_server(host: str = "0.0.0.0", port: int = 8080):
+async def run_server(host: Optional[str] = None, port: Optional[int] = None):
     """Run the API server."""
+    bind_host = host or settings.api_host
+    bind_port = port or settings.api_port
+
+    logger.info(f"Starting API server on {bind_host}:{bind_port}")
+    if settings.api_token:
+        logger.info("API token authentication enabled")
+
     config = uvicorn.Config(
         app,
-        host=host,
-        port=port,
+        host=bind_host,
+        port=bind_port,
         log_level="info",
     )
     server = uvicorn.Server(config)
@@ -115,14 +151,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pocketwatcher Config API")
     parser.add_argument(
         "--host",
-        default="0.0.0.0",
-        help="Host to bind to (default: 0.0.0.0)",
+        default=None,
+        help=f"Host to bind to (default: {settings.api_host} from API_HOST env)",
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=8080,
-        help="Port to bind to (default: 8080)",
+        default=None,
+        help=f"Port to bind to (default: {settings.api_port} from API_PORT env)",
     )
 
     args = parser.parse_args()
