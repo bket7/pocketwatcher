@@ -78,9 +78,21 @@ async def get_stats():
     else:
         mode = "NORMAL"
 
-    # Calculate tx/s (approximate from stream length change)
-    # For now, use a placeholder - real implementation would track over time
+    # Get live stats from worker (published to Redis)
     tx_per_second = 0.0
+    worker_swaps = 0
+    try:
+        import json
+        live_stats_raw = await redis.redis.get("pocketwatcher:live_stats")
+        if live_stats_raw:
+            live_stats = json.loads(live_stats_raw)
+            tx_per_second = live_stats.get("tx_per_second", 0.0)
+            worker_swaps = live_stats.get("swaps_detected", 0)
+            # Use worker's swaps count if it's higher (more accurate)
+            if worker_swaps > swaps_detected:
+                swaps_detected = worker_swaps
+    except Exception as e:
+        logger.debug(f"Failed to get live stats from Redis: {e}")
 
     return SystemStats(
         tx_per_second=tx_per_second,
@@ -375,3 +387,90 @@ async def get_alerts_by_date(
         })
 
     return {"days": result, "total_days": len(result)}
+
+
+@router.get("/live-stream")
+async def get_live_stream(
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    """Get live stream of recent events (swaps, alerts) for real-time monitoring."""
+    redis = await get_redis()
+    postgres = await get_postgres()
+
+    # Get worker live stats
+    live_stats = {}
+    try:
+        import json
+        live_stats_raw = await redis.redis.get("pocketwatcher:live_stats")
+        if live_stats_raw:
+            live_stats = json.loads(live_stats_raw)
+    except Exception:
+        pass
+
+    # Get recent swaps (last 5 minutes)
+    recent_swaps = await postgres.fetch(
+        """
+        SELECT signature, base_mint, user_wallet, side, base_amount, quote_amount,
+               venue, block_time, mcap_at_swap
+        FROM swap_events
+        WHERE block_time >= $1
+        ORDER BY block_time DESC
+        LIMIT $2
+        """,
+        int(time.time()) - 300,  # Last 5 minutes
+        limit
+    )
+
+    swaps = []
+    for row in recent_swaps:
+        # Convert quote_amount (lamports) to SOL
+        amount_sol = float(row.get("quote_amount") or 0) / 1e9
+        swaps.append({
+            "signature": row["signature"][:16] + "...",  # Truncate for display
+            "mint": row["base_mint"],
+            "wallet": row["user_wallet"][:8] + "..." + row["user_wallet"][-4:],  # Truncate wallet
+            "side": row["side"],
+            "amount_sol": amount_sol,
+            "venue": row.get("venue"),
+            "block_time": row["block_time"],
+            "mcap_sol": float(row.get("mcap_at_swap") or 0) if row.get("mcap_at_swap") else None,
+        })
+
+    # Get recent alerts (last hour)
+    recent_alerts = await postgres.fetch(
+        """
+        SELECT id, mint, token_symbol, token_name, trigger_name,
+               volume_sol_5m, mcap_sol, created_at
+        FROM alerts
+        WHERE created_at >= NOW() - INTERVAL '1 hour'
+        ORDER BY created_at DESC
+        LIMIT 20
+        """,
+    )
+
+    alerts = []
+    for row in recent_alerts:
+        mcap = row.get("mcap_sol")
+        if mcap is not None and (mcap == float('inf') or mcap != mcap):
+            mcap = None
+        alerts.append({
+            "id": row["id"],
+            "mint": row["mint"],
+            "token_symbol": row.get("token_symbol"),
+            "token_name": row.get("token_name"),
+            "trigger_name": row["trigger_name"],
+            "volume_sol_5m": float(row.get("volume_sol_5m") or 0),
+            "mcap_sol": float(mcap) if mcap else None,
+            "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+        })
+
+    # Get current HOT tokens
+    hot_mints = await redis.get_hot_tokens()
+
+    return {
+        "stats": live_stats,
+        "swaps": swaps,
+        "alerts": alerts,
+        "hot_tokens": list(hot_mints)[:20],  # Limit to 20
+        "timestamp": time.time(),
+    }

@@ -5,9 +5,11 @@ Main entry point for the application.
 """
 
 import asyncio
+import json
 import logging
 import signal
 import sys
+import time
 from typing import Optional, Union
 
 from config.settings import settings
@@ -414,13 +416,30 @@ class Application:
                 hot_tokens = await self.processor.state_manager.get_hot_tokens()
                 self.metrics.set_hot_token_count(len(hot_tokens))
 
-                # Log stats
+                # Log stats and publish to Redis for API
                 summary = self.metrics.get_summary()
                 logger.info(
                     f"Stats: {summary['tx_per_second']:.1f} tx/s, "
                     f"{summary['swaps_detected']} swaps, "
                     f"{summary['hot_tokens_current']} HOT tokens, "
                     f"lag: {summary['processing_lag_seconds']:.1f}s"
+                )
+
+                # Publish stats to Redis so API can read them
+                await self.redis.redis.set(
+                    "pocketwatcher:live_stats",
+                    json.dumps({
+                        "tx_per_second": summary["tx_per_second"],
+                        "swaps_detected": summary["swaps_detected"],
+                        "hot_tokens_current": summary["hot_tokens_current"],
+                        "processing_lag_seconds": summary["processing_lag_seconds"],
+                        "stream_length": summary["stream_length"],
+                        "uptime_seconds": summary["uptime_seconds"],
+                        "transactions_processed": summary["transactions_processed"],
+                        "alerts_sent": summary["alerts_sent"],
+                        "updated_at": time.time(),
+                    }),
+                    ex=120  # Expire after 2 minutes if worker stops
                 )
 
                 # Cleanup inactive mints

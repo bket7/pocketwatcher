@@ -1,5 +1,6 @@
 import { Routes, Route, NavLink } from 'react-router-dom'
 import Dashboard from './pages/Dashboard'
+import LiveStream from './pages/LiveStream'
 import Calendar from './pages/Calendar'
 import Backtest from './pages/Backtest'
 import Triggers from './pages/Triggers'
@@ -34,6 +35,7 @@ export default function App() {
           </div>
           <nav className="flex gap-2">
             <NavItem to="/">Dashboard</NavItem>
+            <NavItem to="/live">Live</NavItem>
             <NavItem to="/calendar">Calendar</NavItem>
             <NavItem to="/backtest">Backtest</NavItem>
             <NavItem to="/triggers">Triggers</NavItem>
@@ -46,6 +48,7 @@ export default function App() {
       <main className="max-w-7xl mx-auto px-4 py-6">
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/live" element={<LiveStream />} />
           <Route path="/calendar" element={<Calendar />} />
           <Route path="/backtest" element={<Backtest />} />
           <Route path="/triggers" element={<Triggers />} />
