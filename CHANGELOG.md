@@ -5,6 +5,15 @@ All notable changes to Pocketwatcher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.9] - 2026-02-03
+
+### Fixed
+- **Batch consumer deadlock resolved**: Multiple issues caused frozen swap counts
+  - Defensive proto parsing in `main.py` - uses `getattr()` to handle malformed transactions
+  - Signature normalization in `batch_consumer.py` - falls back to `id:<msg_id>` when signature is "unknown" to prevent dedup collapse
+  - Delta log cleanup skips currently-open file to avoid Windows lock errors
+  - Batch processor uses function-local pending lists instead of instance state
+
 ## [0.2.8] - 2026-02-03
 
 ### Added
