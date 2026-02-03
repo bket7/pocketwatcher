@@ -5,6 +5,24 @@ All notable changes to Pocketwatcher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.7] - 2026-02-03
+
+### Added
+- **Production hardening**: Security and observability improvements
+  - API default bind changed to `127.0.0.1` (localhost only)
+  - Optional `API_TOKEN` authentication for write endpoints (PUT/POST/DELETE)
+  - Prometheus `/metrics` endpoint for monitoring
+- **ALT cache TTL**: Cache entries now expire after 1 hour to prevent stale data
+- **Database indexes**: Added indexes for dashboard query performance
+  - `idx_alerts_created_at` for time-based alert queries
+  - `idx_swap_events_block_time` for swap count queries
+- **CI workflow**: GitHub Actions workflow for lint, test, and frontend build
+- **Production runbook**: `docs/RUNBOOK.md` with start/stop/backup/restore procedures
+
+### Changed
+- API server now reads host/port from `API_HOST`/`API_PORT` env vars
+- pyproject.toml version aligned with CHANGELOG
+
 ## [0.2.6] - 2026-02-03
 
 ### Added
