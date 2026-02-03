@@ -22,6 +22,7 @@ from storage.redis_client import RedisClient
 from storage.postgres_client import PostgresClient
 from storage.delta_log import DeltaLog
 from storage.event_log import EventLog
+from storage.swap_queue import SwapEventQueue
 from config.settings import settings
 from .backpressure import BackpressureManager
 from .monitoring import MetricsCollector
@@ -53,12 +54,14 @@ class TransactionProcessor:
         telegram_alerter: TelegramAlerter,
         metrics: MetricsCollector,
         known_programs: Optional[Set[str]] = None,
+        swap_queue: Optional[SwapEventQueue] = None,
     ):
         # Storage
         self.redis = redis_client
         self.postgres = postgres_client
         self.delta_log = delta_log
         self.event_log = event_log
+        self.swap_queue = swap_queue  # Optional queue for background DB writes
 
         # External services
         self.helius = helius_client
@@ -254,7 +257,11 @@ class TransactionProcessor:
                 confidence=swap.confidence,
                 mcap_at_swap=mcap_at_swap,
             )
-            await self.postgres.insert_swap_event(swap_event)
+            # Use queue for non-blocking writes if available
+            if self.swap_queue:
+                await self.swap_queue.put(swap_event)
+            else:
+                await self.postgres.insert_swap_event(swap_event)
 
         # Evaluate triggers
         await self._evaluate_triggers(mint)
@@ -586,7 +593,11 @@ class TransactionProcessor:
                 confidence=swap.confidence,
                 mcap_at_swap=mcap_at_swap,
             )
-            await self.postgres.insert_swap_event(swap_event)
+            # Use queue for non-blocking writes if available
+            if self.swap_queue:
+                await self.swap_queue.put(swap_event)
+            else:
+                await self.postgres.insert_swap_event(swap_event)
 
     async def run_enrichment(self, mint: str):
         """

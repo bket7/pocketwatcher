@@ -26,6 +26,8 @@ from alerting.discord import DiscordAlerter
 from alerting.telegram import TelegramAlerter
 from core.processor import TransactionProcessor
 from core.monitoring import MetricsCollector, HealthChecker
+from core.swap_flusher import SwapFlusher
+from storage.swap_queue import SwapEventQueue
 
 # Configure logging
 logging.basicConfig(
@@ -62,6 +64,8 @@ class Application:
         self.processor: Optional[TransactionProcessor] = None
         self.metrics: Optional[MetricsCollector] = None
         self.health_checker: Optional[HealthChecker] = None
+        self.swap_queue: Optional[SwapEventQueue] = None
+        self.swap_flusher: Optional[SwapFlusher] = None
 
         # Tasks
         self._tasks = []
@@ -118,6 +122,17 @@ class Application:
         self.telegram = TelegramAlerter()
         await self.telegram.start()
 
+        # Initialize swap queue for background DB writes
+        logger.info("Initializing swap queue...")
+        self.swap_queue = SwapEventQueue(max_size=10000)
+        self.swap_flusher = SwapFlusher(
+            queue=self.swap_queue,
+            postgres=self.postgres,
+            metrics=self.metrics,
+            flush_interval=1.0,
+            batch_size=500,
+        )
+
         # Initialize processor
         logger.info("Initializing transaction processor...")
         self.processor = TransactionProcessor(
@@ -130,6 +145,7 @@ class Application:
             telegram_alerter=self.telegram,
             metrics=self.metrics,
             known_programs=self.yellowstone.known_programs,
+            swap_queue=self.swap_queue,
         )
         await self.processor.initialize()
 
@@ -210,6 +226,10 @@ class Application:
         if self.telegram:
             await self.telegram.stop()
 
+        # Stop swap flusher (flushes remaining events to DB)
+        if self.swap_flusher:
+            await self.swap_flusher.stop()
+
         if self.redis:
             await self.redis.close()
 
@@ -226,6 +246,7 @@ class Application:
             asyncio.create_task(self._run_consumer()),
             asyncio.create_task(self._run_detection_loop()),
             asyncio.create_task(self._run_stats_loop()),
+            asyncio.create_task(self.swap_flusher.run()),
             asyncio.create_task(self._run_maintenance_loop()),
             asyncio.create_task(self.health_checker.health_check_loop()),
         ]

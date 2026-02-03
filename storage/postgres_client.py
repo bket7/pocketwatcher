@@ -314,6 +314,55 @@ class PostgresClient:
             except Exception as e:
                 logger.error(f"Failed to insert swap event: {e}")
 
+    async def bulk_insert_swap_events(self, events: List[SwapEventFull]) -> int:
+        """
+        Insert multiple swap events in a single transaction.
+
+        Much faster than individual inserts for batched writes.
+        Returns number of events inserted.
+        """
+        if not events:
+            return 0
+
+        async with self.pool.acquire() as conn:
+            try:
+                # Prepare data for executemany
+                data = [
+                    (
+                        e.signature,
+                        e.slot,
+                        e.block_time,
+                        e.venue,
+                        e.user_wallet,
+                        e.side.value if isinstance(e.side, SwapSide) else e.side,
+                        e.base_mint,
+                        e.base_amount,
+                        e.quote_mint,
+                        e.quote_amount,
+                        e.confidence,
+                        e.route_depth,
+                        e.mcap_at_swap,
+                    )
+                    for e in events
+                ]
+
+                # Use copy_records for maximum speed
+                await conn.executemany(
+                    """
+                    INSERT INTO swap_events (
+                        signature, slot, block_time, venue, user_wallet,
+                        side, base_mint, base_amount, quote_mint, quote_amount,
+                        confidence, route_depth, mcap_at_swap
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                    ON CONFLICT (signature, base_mint) DO NOTHING
+                    """,
+                    data
+                )
+                return len(events)
+            except Exception as e:
+                logger.error(f"Failed to bulk insert {len(events)} swap events: {e}")
+                return 0
+
     async def get_recent_swaps(
         self,
         mint: str,
