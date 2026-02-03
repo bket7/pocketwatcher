@@ -243,7 +243,7 @@ class BatchConsumer:
                 await on_error(None, e)
 
         # Phase 5: Execute accumulated writes (1 RTT)
-        if ctx._write_pipeline_commands:
+        if ctx._write_pipeline_commands or ctx._counter_updates:
             await ctx._execute_writes()
 
         # Phase 6: ACK all messages
