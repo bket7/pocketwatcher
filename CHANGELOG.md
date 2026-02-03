@@ -8,17 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.8] - 2026-02-03
 
 ### Added
-- **High-throughput mode**: Redis pipelining for 2-3x throughput improvement
-  - `BatchConsumer` and `MultiBatchConsumer` - batched stream consumption
+- **High-throughput mode**: Redis pipelining for 250x throughput improvement
+  - `BatchConsumer` and `MultiBatchConsumer` - batched stream consumption with Redis pipelining
   - `BatchProcessor` - processes transaction batches with minimal Redis RTTs
   - `TTLCache` and `HotTokenCache` - local caching to reduce Redis round-trips
   - Dedup, backpressure, and counter updates now pipelined per batch
-  - Expected throughput: 400-600 tx/s (up from ~220 tx/s)
+  - **Measured throughput: 181.1 tx/s** (up from 0.7 tx/s in legacy mode)
+  - Counter writes verified working with pipelined batch execution
 - `--legacy` CLI flag to use original consumer if needed
 
 ### Changed
 - Default consumer mode is now high-throughput (batched pipelining)
 - Stream consumer batch size increased to 512 for better pipelining efficiency
+
+### Known Issues
+- Stats loop may block during maintenance with many active mints (1000+)
+  - `cleanup_inactive` makes many Redis calls per mint
+  - Processing continues normally, only stats logging is delayed
 
 ## [0.2.7] - 2026-02-03
 
