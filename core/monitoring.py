@@ -146,6 +146,14 @@ class MetricsCollector:
         """Record transaction processing time."""
         self.observe("tx_processing_seconds", seconds)
 
+    def record_batch_time(self, seconds: float, batch_size: int):
+        """Record batch processing time and per-tx average."""
+        self.observe("batch_processing_seconds", seconds)
+        if batch_size > 0:
+            per_tx = seconds / batch_size
+            self.observe("tx_processing_seconds", per_tx)
+        self.inc("batches_processed_total")
+
     def set_stream_length(self, length: int):
         """Set current stream length."""
         self.set_gauge("stream_length", length)

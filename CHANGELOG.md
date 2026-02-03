@@ -5,6 +5,21 @@ All notable changes to Pocketwatcher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.8] - 2026-02-03
+
+### Added
+- **High-throughput mode**: Redis pipelining for 2-3x throughput improvement
+  - `BatchConsumer` and `MultiBatchConsumer` - batched stream consumption
+  - `BatchProcessor` - processes transaction batches with minimal Redis RTTs
+  - `TTLCache` and `HotTokenCache` - local caching to reduce Redis round-trips
+  - Dedup, backpressure, and counter updates now pipelined per batch
+  - Expected throughput: 400-600 tx/s (up from ~220 tx/s)
+- `--legacy` CLI flag to use original consumer if needed
+
+### Changed
+- Default consumer mode is now high-throughput (batched pipelining)
+- Stream consumer batch size increased to 512 for better pipelining efficiency
+
 ## [0.2.7] - 2026-02-03
 
 ### Added

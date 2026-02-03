@@ -19,7 +19,9 @@ from storage.delta_log import DeltaLog
 from storage.event_log import EventLog
 from stream.yellowstone import YellowstoneClient, MockYellowstoneClient
 from stream.consumer import StreamConsumer, MultiConsumer
+from stream.batch_consumer import BatchConsumer, MultiBatchConsumer
 from stream.dedup import DedupFilter
+from core.batch_processor import BatchProcessor
 from parser.alt_cache import ALTCache
 from enrichment.helius import HeliusClient
 from alerting.discord import DiscordAlerter
@@ -44,8 +46,9 @@ logger = logging.getLogger("pocketwatcher")
 class Application:
     """Main application class orchestrating all components."""
 
-    def __init__(self, use_mock_stream: bool = False):
+    def __init__(self, use_mock_stream: bool = False, high_throughput: bool = True):
         self.use_mock_stream = use_mock_stream
+        self.high_throughput = high_throughput  # Use batched consumer with Redis pipelining
         self._running = False
         self._shutdown_event = asyncio.Event()
 
@@ -55,13 +58,15 @@ class Application:
         self.delta_log: Optional[DeltaLog] = None
         self.event_log: Optional[EventLog] = None
         self.yellowstone: Optional[YellowstoneClient] = None
-        self.consumer: Optional[Union[StreamConsumer, MultiConsumer]] = None
+        self.consumer: Optional[Union[StreamConsumer, MultiConsumer, MultiBatchConsumer]] = None
+        self.batch_consumer: Optional[MultiBatchConsumer] = None
         self.dedup: Optional[DedupFilter] = None
         self.alt_cache: Optional[ALTCache] = None
         self.helius: Optional[HeliusClient] = None
         self.discord: Optional[DiscordAlerter] = None
         self.telegram: Optional[TelegramAlerter] = None
         self.processor: Optional[TransactionProcessor] = None
+        self.batch_processor: Optional[BatchProcessor] = None
         self.metrics: Optional[MetricsCollector] = None
         self.health_checker: Optional[HealthChecker] = None
         self.swap_queue: Optional[SwapEventQueue] = None
@@ -154,19 +159,38 @@ class Application:
 
         # Initialize consumer
         consumer_count = max(1, settings.stream_consumer_count)
-        if consumer_count > 1:
-            self.consumer = MultiConsumer(
+
+        if self.high_throughput:
+            # High-throughput mode: use batched consumer with Redis pipelining
+            logger.info("Using HIGH-THROUGHPUT mode with Redis pipelining")
+            self.batch_processor = BatchProcessor(
+                delta_log=self.delta_log,
+                event_log=self.event_log,
+                swap_queue=self.swap_queue,
+                metrics=self.metrics,
+                known_programs=self.yellowstone.known_programs,
+            )
+            self.batch_consumer = MultiBatchConsumer(
                 self.redis,
-                num_consumers=consumer_count,
-                batch_size=settings.stream_consumer_batch_size,
-                block_ms=settings.stream_consumer_block_ms,
+                num_consumers=min(consumer_count, 4),  # 4 batch consumers is usually optimal
+                batch_size=512,  # Larger batches for better pipelining
+                block_ms=500,
             )
         else:
-            self.consumer = StreamConsumer(
-                self.redis,
-                batch_size=settings.stream_consumer_batch_size,
-                block_ms=settings.stream_consumer_block_ms,
-            )
+            # Standard mode: original consumer
+            if consumer_count > 1:
+                self.consumer = MultiConsumer(
+                    self.redis,
+                    num_consumers=consumer_count,
+                    batch_size=settings.stream_consumer_batch_size,
+                    block_ms=settings.stream_consumer_block_ms,
+                )
+            else:
+                self.consumer = StreamConsumer(
+                    self.redis,
+                    batch_size=settings.stream_consumer_batch_size,
+                    block_ms=settings.stream_consumer_block_ms,
+                )
 
         # Initialize health checker
         self.health_checker = HealthChecker(self.metrics, redis_client=self.redis)
@@ -208,6 +232,9 @@ class Application:
             if asyncio.iscoroutine(stop_result):
                 await stop_result
 
+        if self.batch_consumer:
+            await self.batch_consumer.stop()
+
         if self.delta_log:
             await self.delta_log.stop()
 
@@ -243,13 +270,18 @@ class Application:
         # Start background tasks
         self._tasks = [
             asyncio.create_task(self._run_ingest()),
-            asyncio.create_task(self._run_consumer()),
             asyncio.create_task(self._run_detection_loop()),
             asyncio.create_task(self._run_stats_loop()),
             asyncio.create_task(self.swap_flusher.run()),
             asyncio.create_task(self._run_maintenance_loop()),
             asyncio.create_task(self.health_checker.health_check_loop()),
         ]
+
+        # Add consumer task based on mode
+        if self.high_throughput:
+            self._tasks.append(asyncio.create_task(self._run_batch_consumer()))
+        else:
+            self._tasks.append(asyncio.create_task(self._run_consumer()))
 
         # Wait for shutdown
         await self._shutdown_event.wait()
@@ -396,6 +428,33 @@ class Application:
         except asyncio.CancelledError:
             logger.info("Consumer task cancelled")
 
+    async def _run_batch_consumer(self):
+        """Run the high-throughput batch consumer with Redis pipelining."""
+        logger.info("Starting batch consumer (high-throughput mode)...")
+
+        async def on_batch(transactions, ctx):
+            """Handle batch of transactions."""
+            try:
+                await self.batch_processor.process_batch(transactions, ctx)
+            except Exception as e:
+                import traceback
+                logger.error(f"Batch processor error: {e}")
+                logger.debug(f"Batch traceback:\n{traceback.format_exc()}")
+                self.batch_processor.reset_pending()
+
+        async def on_error(msg_id, error):
+            """Handle batch consumer errors."""
+            logger.error(f"Batch consumer error: {error}")
+
+        try:
+            await self.batch_consumer.start(
+                on_batch=on_batch,
+                on_error=on_error,
+            )
+            await self._shutdown_event.wait()
+        except asyncio.CancelledError:
+            logger.info("Batch consumer task cancelled")
+
     async def _run_detection_loop(self):
         """Run periodic detection trigger evaluation."""
         logger.info("Starting detection loop...")
@@ -515,9 +574,9 @@ def setup_signal_handlers(app: Application):
         signal.signal(signal.SIGBREAK, handler)
 
 
-async def main(use_mock: bool = False):
+async def main(use_mock: bool = False, high_throughput: bool = True):
     """Main entry point."""
-    app = Application(use_mock_stream=use_mock)
+    app = Application(use_mock_stream=use_mock, high_throughput=high_throughput)
 
     # Setup cross-platform signal handlers
     setup_signal_handlers(app)
@@ -548,10 +607,15 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable debug logging"
     )
+    parser.add_argument(
+        "--legacy",
+        action="store_true",
+        help="Use legacy consumer (disable high-throughput mode)"
+    )
 
     args = parser.parse_args()
 
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    asyncio.run(main(use_mock=args.mock))
+    asyncio.run(main(use_mock=args.mock, high_throughput=not args.legacy))
