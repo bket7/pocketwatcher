@@ -2,20 +2,26 @@
 
 import asyncio
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from api.deps import init_clients, close_clients
 from api.routes import triggers_router, settings_router, stats_router, backtest_router, metrics_router
 from api.routes.backtest import start_background_refresh
 from config.settings import settings
+
+# Frontend dist directory (relative to project root)
+FRONTEND_DIST = Path(__file__).parent.parent / "web" / "dist"
 
 
 class APITokenMiddleware(BaseHTTPMiddleware):
@@ -116,14 +122,47 @@ app.include_router(backtest_router, prefix="/api")
 app.include_router(metrics_router)  # No prefix - /metrics is standard
 
 
+# Mount static files if frontend is built
+if FRONTEND_DIST.exists() and (FRONTEND_DIST / "index.html").exists():
+    # Serve static assets (js, css, images)
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
+    logger.info(f"Serving frontend from {FRONTEND_DIST}")
+
+
 @app.get("/")
 async def root():
-    """Root endpoint."""
+    """Root endpoint - serve frontend or API info."""
+    # If frontend is built, serve it
+    if FRONTEND_DIST.exists() and (FRONTEND_DIST / "index.html").exists():
+        return FileResponse(FRONTEND_DIST / "index.html")
+
     return {
         "name": "Pocketwatcher Config API",
-        "version": "0.1.0",
+        "version": "0.2.7",
         "docs": "/docs",
+        "dashboard": "Run 'npm run build' in web/ to enable dashboard",
     }
+
+
+@app.get("/{path:path}")
+async def serve_spa(path: str):
+    """Serve SPA routes - return index.html for client-side routing."""
+    # Skip API routes and known paths
+    if path.startswith("api/") or path.startswith("docs") or path.startswith("openapi") or path == "metrics":
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
+
+    # Check if it's a static file request
+    if FRONTEND_DIST.exists():
+        file_path = FRONTEND_DIST / path
+        if file_path.exists() and file_path.is_file():
+            return FileResponse(file_path)
+
+        # Return index.html for SPA routes
+        index_path = FRONTEND_DIST / "index.html"
+        if index_path.exists():
+            return FileResponse(index_path)
+
+    return JSONResponse(status_code=404, content={"detail": "Not found"})
 
 
 async def run_server(host: Optional[str] = None, port: Optional[int] = None):
