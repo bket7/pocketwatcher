@@ -3,13 +3,22 @@
 import asyncio
 import logging
 import struct
-from typing import Dict, List, Optional
+import time
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 
 import httpx
 
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CacheEntry:
+    """Cache entry with timestamp for TTL enforcement."""
+    addresses: List[str]
+    created_at: float
 
 
 class ALTCache:
@@ -23,18 +32,24 @@ class ALTCache:
     Fallback: Fetch ALT content via RPC (1 credit per lookup on Helius).
     """
 
+    # Default TTL: 1 hour (ALT contents rarely change)
+    DEFAULT_TTL_SECONDS = 3600
+
     def __init__(
         self,
         rpc_url: Optional[str] = None,
         cache_size: int = 10000,
+        ttl_seconds: Optional[int] = None,
     ):
         self.rpc_url = rpc_url or settings.helius_endpoint
-        self._cache: Dict[str, List[str]] = {}
+        self._cache: Dict[str, CacheEntry] = {}
         self._cache_size = cache_size
+        self._ttl_seconds = ttl_seconds or self.DEFAULT_TTL_SECONDS
         self._hits = 0
         self._misses = 0
         self._fetches = 0
         self._fetch_errors = 0
+        self._expired = 0
         self._http_client: Optional[httpx.AsyncClient] = None
 
     async def start(self):
@@ -80,10 +95,19 @@ class ALTCache:
         Returns:
             List of addresses contained in the ALT
         """
+        now = time.time()
+
         # Check cache first
         if alt_address in self._cache:
-            self._hits += 1
-            return self._cache[alt_address]
+            entry = self._cache[alt_address]
+            # Check TTL
+            if now - entry.created_at < self._ttl_seconds:
+                self._hits += 1
+                return entry.addresses
+            else:
+                # Entry expired, remove it
+                del self._cache[alt_address]
+                self._expired += 1
 
         self._misses += 1
 
@@ -92,20 +116,39 @@ class ALTCache:
             addresses = await self._fetch_alt(alt_address)
             self._fetches += 1
 
-            # Cache the result
+            # Evict old entries if cache full
             if len(self._cache) >= self._cache_size:
-                # Simple LRU: remove oldest entries
-                to_remove = list(self._cache.keys())[:len(self._cache) // 10]
-                for key in to_remove:
-                    del self._cache[key]
+                self._evict_entries(now)
 
-            self._cache[alt_address] = addresses
+            # Cache the result with timestamp
+            self._cache[alt_address] = CacheEntry(addresses=addresses, created_at=now)
             return addresses
 
         except Exception as e:
             self._fetch_errors += 1
             logger.error(f"Failed to fetch ALT {alt_address}: {e}")
             return []
+
+    def _evict_entries(self, now: float):
+        """Evict expired entries, then oldest if still over capacity."""
+        # First remove expired entries
+        expired_keys = [
+            k for k, v in self._cache.items()
+            if now - v.created_at >= self._ttl_seconds
+        ]
+        for key in expired_keys:
+            del self._cache[key]
+            self._expired += 1
+
+        # If still over capacity, remove oldest entries
+        if len(self._cache) >= self._cache_size:
+            sorted_entries = sorted(
+                self._cache.items(),
+                key=lambda x: x[1].created_at
+            )
+            to_remove = len(self._cache) - (self._cache_size * 9 // 10)
+            for key, _ in sorted_entries[:to_remove]:
+                del self._cache[key]
 
     async def _fetch_alt(self, alt_address: str) -> List[str]:
         """Fetch ALT content from RPC."""
@@ -202,13 +245,20 @@ class ALTCache:
         return {
             "cache_size": len(self._cache),
             "max_cache_size": self._cache_size,
+            "ttl_seconds": self._ttl_seconds,
             "hits": self._hits,
             "misses": self._misses,
             "hit_rate_pct": hit_rate,
             "fetches": self._fetches,
             "fetch_errors": self._fetch_errors,
+            "expired": self._expired,
         }
 
     def clear_cache(self):
-        """Clear the cache."""
+        """Clear the cache and reset stats."""
         self._cache.clear()
+        self._hits = 0
+        self._misses = 0
+        self._fetches = 0
+        self._fetch_errors = 0
+        self._expired = 0
