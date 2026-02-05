@@ -308,21 +308,94 @@ class BatchConsumer:
                 message_ids=idle_ids,
             )
 
-            if claimed:
-                # Process as a batch
-                raw_messages = []
-                for msg_id, fields in claimed:
-                    raw_data = fields.get(b"data") or fields.get("data")
-                    if raw_data:
-                        raw_messages.append((msg_id, raw_data))
+            if not claimed:
+                return
 
-                if raw_messages:
-                    # Re-add to stream logic... for simplicity just process normally
-                    pass
+            # Extract raw messages from claimed
+            raw_messages: List[Tuple[bytes, bytes]] = []
+            for msg_id, fields in claimed:
+                raw_data = fields.get(b"data") or fields.get("data")
+                if raw_data:
+                    raw_messages.append((msg_id, raw_data))
 
-                # ACK all
+            if not raw_messages:
+                # No data to process, ACK the empty claims
                 await self.redis.ack_messages([m[0] for m in claimed])
-                logger.info(f"Processed {len(claimed)} pending messages")
+                return
+
+            # Parse all claimed messages (same logic as _process_batch)
+            parsed_txs: List[Tuple[bytes, Dict[str, Any]]] = []
+            signatures: List[str] = []
+
+            for msg_id, raw_data in raw_messages:
+                try:
+                    tx_data = msgpack.unpackb(raw_data)
+                    sig = tx_data.get("signature") if isinstance(tx_data, dict) else None
+                    if sig is None and isinstance(tx_data, dict):
+                        sig = tx_data.get(b"signature")
+                    normalized_sig = self._normalize_signature(sig, msg_id)
+                    should_set_sig = (
+                        isinstance(sig, bytes)
+                        or not sig
+                        or (isinstance(sig, str) and sig.strip().lower() in {"unknown", "error"})
+                    )
+                    if isinstance(tx_data, dict) and should_set_sig:
+                        tx_data["signature"] = normalized_sig
+                    parsed_txs.append((msg_id, tx_data))
+                    signatures.append(normalized_sig)
+                except Exception as e:
+                    self._error_count += 1
+                    logger.debug(f"Failed to parse claimed message: {e}")
+
+            if not parsed_txs:
+                # All failed to parse, ACK them to prevent infinite retry
+                await self.redis.ack_messages([m[0] for m in raw_messages])
+                return
+
+            # Dedup check via Redis pipeline (claimed messages may have been partially processed)
+            pipe = self.redis.redis.pipeline(transaction=False)
+            for sig in signatures:
+                pipe.set(f"sig:{sig}", b"1", ex=self.dedup_ttl, nx=True)
+            pipe.xlen(TX_STREAM)
+            results = await pipe.execute()
+
+            # Filter to non-duplicates
+            dedup_results = results[:len(signatures)]
+            non_dup_txs: List[Tuple[bytes, Dict[str, Any]]] = []
+            for (msg_id, tx_data), result in zip(parsed_txs, dedup_results):
+                if result is not None:  # SET NX succeeded = not a duplicate
+                    non_dup_txs.append((msg_id, tx_data))
+
+            stream_length = results[len(signatures)] or 0
+
+            if not non_dup_txs:
+                # All were duplicates (already processed before crash), safe to ACK
+                await self.redis.ack_messages([m[0] for m in raw_messages])
+                logger.info(f"Claimed {len(claimed)} messages (all duplicates, ACKed)")
+                return
+
+            # Create batch context and process through handler
+            ctx = BatchContext(
+                batch_consumer=self,
+                stream_length=stream_length,
+                hot_tokens=self._hot_token_cache.get_all(),
+            )
+
+            try:
+                await on_batch([tx for _, tx in non_dup_txs], ctx)
+                self._processed_count += len(non_dup_txs)
+            except Exception as e:
+                self._error_count += len(non_dup_txs)
+                logger.error(f"Error processing claimed batch: {e}")
+                if on_error:
+                    await on_error(None, e)
+                # Don't ACK on error - let messages be reclaimed again
+                return
+
+            # Execute writes and ACK all original messages
+            all_msg_ids = [m[0] for m in raw_messages]
+            await ctx._execute_writes(ack_message_ids=all_msg_ids)
+            logger.info(f"Processed {len(non_dup_txs)} claimed messages ({len(raw_messages) - len(non_dup_txs)} duplicates)")
 
         except Exception as e:
             logger.error(f"Error claiming pending messages: {e}")
@@ -440,6 +513,7 @@ class BatchContext:
             getattr(pipe, cmd)(*args, **kwargs)
 
         # Add counter updates
+        wallets_seen: Set[str] = set()  # Track wallets to avoid duplicate first_seen writes
         for update in self._counter_updates.values():
             mint = update["mint"]
             wallet = update["user_wallet"]
@@ -463,9 +537,12 @@ class BatchContext:
             pipe.incrbyfloat(volume_key, volume)
             expire_once(volume_key, 900)
 
-        # Track wallet first-seen (single command)
-        pipe.set(f"wallet:first_seen:{wallet}", now, nx=True, ex=86400 * 7)
+            # Track wallet first-seen (inside loop, deduplicated per batch)
+            if wallet and wallet not in wallets_seen:
+                pipe.set(f"wallet:first_seen:{wallet}", now, nx=True, ex=86400 * 7)
+                wallets_seen.add(wallet)
 
+        # ACK must always execute - never let counter write failures block it
         ack_commands = 0
         if ack_message_ids:
             pipe.xack(TX_STREAM, CONSUMER_GROUP, *ack_message_ids)
@@ -475,10 +552,16 @@ class BatchContext:
         self._consumer._pipeline_commands += (
             len(self._write_pipeline_commands)
             + len(self._counter_updates) * 8
+            + len(wallets_seen)  # first_seen writes
             + ack_commands
         )
 
-        await pipe.execute()
+        try:
+            await pipe.execute()
+        except Exception as e:
+            # Log error but don't raise - ACK was in the pipeline so if this fails
+            # the messages will be reclaimed and reprocessed (which is correct)
+            logger.error(f"Pipeline execute failed: {e}")
 
 
 class MultiBatchConsumer:
