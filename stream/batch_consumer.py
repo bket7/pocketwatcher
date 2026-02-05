@@ -581,11 +581,17 @@ class MultiBatchConsumer:
         num_consumers: int = 4,
         batch_size: int = 512,
         block_ms: int = 500,
+        consumer_prefix: Optional[str] = None,
     ):
         self.redis = redis_client
         self.num_consumers = num_consumers
         self.batch_size = batch_size
         self.block_ms = block_ms
+        # Use PID-based prefix for unique consumer names across processes
+        if consumer_prefix is None:
+            import os
+            consumer_prefix = f"batch-{os.getpid()}"
+        self.consumer_prefix = consumer_prefix
 
         self._consumers: List[BatchConsumer] = []
         self._tasks: List[asyncio.Task] = []
@@ -599,7 +605,7 @@ class MultiBatchConsumer:
         for i in range(self.num_consumers):
             consumer = BatchConsumer(
                 self.redis,
-                consumer_name=f"batch-{i+1}",
+                consumer_name=f"{self.consumer_prefix}-{i+1}",
                 batch_size=self.batch_size,
                 block_ms=self.block_ms,
             )
