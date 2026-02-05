@@ -5,6 +5,26 @@ All notable changes to Pocketwatcher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-02-05
+
+### Fixed
+- **Bug A: Pending claim silent drops** - `_claim_pending_messages()` was ACKing claimed messages without processing them. Now properly processes claimed messages through the batch pipeline before ACKing.
+- **Bug B: first_seen loop variable** - `wallet:first_seen` write was outside the counter update loop, causing NameError when `_counter_updates` was empty (blocking ACK) and only writing first_seen for last wallet. Moved inside loop with deduplication.
+
+### Added
+- **Multi-process mode**: CLI flags for running components in separate OS processes to bypass GIL
+  - `--ingest-only` - Run only Yellowstone → Redis stream ingest
+  - `--consume-only` - Run only stream consumer/processor
+  - `--detect-only` - Run only detection/alerts loop
+  - `--consumer-name` - Set custom consumer name for XREADGROUP
+  - `CONSUMER_NAME` env var support for consumer naming
+  - No flags = current behavior (backward compatible)
+- **hiredis**: Added to requirements for C-based Redis RESP parsing (auto-detected by redis-py)
+
+### Changed
+- Consumer names now include hostname and PID for multi-process debugging (`parser-{hostname}-{pid}`)
+- Pipeline command count now includes first_seen writes
+
 ## [0.2.9] - 2026-02-03
 
 ### Fixed

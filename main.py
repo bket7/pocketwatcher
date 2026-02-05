@@ -46,9 +46,17 @@ logger = logging.getLogger("pocketwatcher")
 class Application:
     """Main application class orchestrating all components."""
 
-    def __init__(self, use_mock_stream: bool = False, high_throughput: bool = True):
+    def __init__(
+        self,
+        use_mock_stream: bool = False,
+        high_throughput: bool = True,
+        mode: str = "all",
+        consumer_name: Optional[str] = None,
+    ):
         self.use_mock_stream = use_mock_stream
         self.high_throughput = high_throughput  # Use batched consumer with Redis pipelining
+        self.mode = mode  # "all", "ingest", "consume", or "detect"
+        self.consumer_name = consumer_name
         self._running = False
         self._shutdown_event = asyncio.Event()
 
@@ -76,134 +84,160 @@ class Application:
         self._tasks = []
 
     async def start(self):
-        """Start all components."""
-        logger.info("Starting Pocketwatcher...")
+        """Start components based on run mode."""
+        mode_desc = {
+            "all": "full mode",
+            "ingest": "INGEST-ONLY mode",
+            "consume": "CONSUME-ONLY mode",
+            "detect": "DETECT-ONLY mode",
+        }
+        logger.info(f"Starting Pocketwatcher in {mode_desc.get(self.mode, self.mode)}...")
 
-        # Initialize metrics
+        # Initialize metrics (always needed)
         self.metrics = MetricsCollector()
 
-        # Initialize storage
+        # Initialize Redis (always needed)
         logger.info("Connecting to Redis...")
         self.redis = RedisClient()
         await self.redis.connect()
 
-        logger.info("Connecting to PostgreSQL...")
-        self.postgres = PostgresClient()
-        await self.postgres.connect()
+        # Components needed for ingest mode
+        needs_ingest = self.mode in ("all", "ingest")
+        # Components needed for consume mode
+        needs_consume = self.mode in ("all", "consume")
+        # Components needed for detect mode
+        needs_detect = self.mode in ("all", "detect")
 
-        logger.info("Initializing logs...")
-        self.delta_log = DeltaLog()
-        await self.delta_log.start()
+        # PostgreSQL (needed for consume and detect)
+        if needs_consume or needs_detect:
+            logger.info("Connecting to PostgreSQL...")
+            self.postgres = PostgresClient()
+            await self.postgres.connect()
 
-        self.event_log = EventLog()
-        await self.event_log.start()
+        # Delta/Event logs (needed for consume)
+        if needs_consume:
+            logger.info("Initializing logs...")
+            self.delta_log = DeltaLog()
+            await self.delta_log.start()
+            self.event_log = EventLog()
+            await self.event_log.start()
 
-        # Initialize stream client
-        logger.info("Initializing stream client...")
-        if self.use_mock_stream:
-            self.yellowstone = MockYellowstoneClient()
-        else:
-            self.yellowstone = YellowstoneClient()
+        # Yellowstone client (needed for ingest)
+        if needs_ingest:
+            logger.info("Initializing stream client...")
+            if self.use_mock_stream:
+                self.yellowstone = MockYellowstoneClient()
+            else:
+                self.yellowstone = YellowstoneClient()
+            await self.yellowstone.load_programs()
 
-        await self.yellowstone.load_programs()
+        # Dedup filter (needed for legacy consume mode)
+        if needs_consume:
+            self.dedup = DedupFilter(self.redis)
 
-        # Initialize dedup
-        self.dedup = DedupFilter(self.redis)
+        # ALT cache (needed for consume)
+        if needs_consume:
+            self.alt_cache = ALTCache()
+            await self.alt_cache.start()
 
-        # Initialize ALT cache
-        self.alt_cache = ALTCache()
-        await self.alt_cache.start()
+        # Helius client (needed for detect - enrichment during alerts)
+        if needs_detect:
+            logger.info("Initializing Helius client...")
+            self.helius = HeliusClient()
+            await self.helius.start()
 
-        # Initialize enrichment
-        logger.info("Initializing Helius client...")
-        self.helius = HeliusClient()
-        await self.helius.start()
+        # Alerters (needed for detect)
+        if needs_detect:
+            logger.info("Initializing alerters...")
+            self.discord = DiscordAlerter()
+            await self.discord.start()
+            self.telegram = TelegramAlerter()
+            await self.telegram.start()
 
-        # Initialize alerting
-        logger.info("Initializing alerters...")
-        self.discord = DiscordAlerter()
-        await self.discord.start()
+        # Swap queue and flusher (needed for consume)
+        if needs_consume:
+            logger.info("Initializing swap queue...")
+            self.swap_queue = SwapEventQueue(max_size=10000)
+            self.swap_flusher = SwapFlusher(
+                queue=self.swap_queue,
+                postgres=self.postgres,
+                metrics=self.metrics,
+                flush_interval=1.0,
+                batch_size=500,
+            )
 
-        self.telegram = TelegramAlerter()
-        await self.telegram.start()
-
-        # Initialize swap queue for background DB writes
-        logger.info("Initializing swap queue...")
-        self.swap_queue = SwapEventQueue(max_size=10000)
-        self.swap_flusher = SwapFlusher(
-            queue=self.swap_queue,
-            postgres=self.postgres,
-            metrics=self.metrics,
-            flush_interval=1.0,
-            batch_size=500,
-        )
-
-        # Initialize processor
-        logger.info("Initializing transaction processor...")
-        self.processor = TransactionProcessor(
-            redis_client=self.redis,
-            postgres_client=self.postgres,
-            delta_log=self.delta_log,
-            event_log=self.event_log,
-            helius_client=self.helius,
-            discord_alerter=self.discord,
-            telegram_alerter=self.telegram,
-            metrics=self.metrics,
-            known_programs=self.yellowstone.known_programs,
-            swap_queue=self.swap_queue,
-        )
-        await self.processor.initialize()
-
-        # Start config hot-reload listener
-        await self.processor.trigger_evaluator.start_config_listener()
-
-        # Initialize consumer
-        consumer_count = max(1, settings.stream_consumer_count)
-
-        if self.high_throughput:
-            # High-throughput mode: use batched consumer with Redis pipelining
-            logger.info("Using HIGH-THROUGHPUT mode with Redis pipelining")
-            self.batch_processor = BatchProcessor(
+        # Transaction processor (needed for detect, and consume in legacy mode)
+        # Also needed for consume to share counter_manager
+        if needs_detect or needs_consume:
+            logger.info("Initializing transaction processor...")
+            # For consume-only, we may not have yellowstone, so pass empty set
+            known_programs = getattr(self.yellowstone, 'known_programs', set()) if self.yellowstone else set()
+            self.processor = TransactionProcessor(
+                redis_client=self.redis,
+                postgres_client=self.postgres,
                 delta_log=self.delta_log,
                 event_log=self.event_log,
-                swap_queue=self.swap_queue,
+                helius_client=self.helius,
+                discord_alerter=self.discord,
+                telegram_alerter=self.telegram,
                 metrics=self.metrics,
-                known_programs=self.yellowstone.known_programs,
-                counter_manager=self.processor.counter_manager,  # Share counter_manager for detection loop
+                known_programs=known_programs,
+                swap_queue=self.swap_queue,
             )
-            self.batch_consumer = MultiBatchConsumer(
-                self.redis,
-                num_consumers=min(consumer_count, 8),  # Allow higher parallelism when configured
-                batch_size=512,  # Larger batches for better pipelining
-                block_ms=500,
-            )
-        else:
-            # Standard mode: original consumer
-            if consumer_count > 1:
-                self.consumer = MultiConsumer(
+            await self.processor.initialize()
+
+            # Config hot-reload (needed for detect)
+            if needs_detect:
+                await self.processor.trigger_evaluator.start_config_listener()
+
+        # Consumer initialization (needed for consume)
+        if needs_consume:
+            consumer_count = max(1, settings.stream_consumer_count)
+            known_programs = getattr(self.yellowstone, 'known_programs', set()) if self.yellowstone else set()
+
+            if self.high_throughput:
+                logger.info("Using HIGH-THROUGHPUT mode with Redis pipelining")
+                self.batch_processor = BatchProcessor(
+                    delta_log=self.delta_log,
+                    event_log=self.event_log,
+                    swap_queue=self.swap_queue,
+                    metrics=self.metrics,
+                    known_programs=known_programs,
+                    counter_manager=self.processor.counter_manager if self.processor else None,
+                )
+                self.batch_consumer = MultiBatchConsumer(
                     self.redis,
-                    num_consumers=consumer_count,
-                    batch_size=settings.stream_consumer_batch_size,
-                    block_ms=settings.stream_consumer_block_ms,
+                    num_consumers=min(consumer_count, 8),
+                    batch_size=512,
+                    block_ms=500,
                 )
             else:
-                self.consumer = StreamConsumer(
-                    self.redis,
-                    batch_size=settings.stream_consumer_batch_size,
-                    block_ms=settings.stream_consumer_block_ms,
-                )
+                if consumer_count > 1:
+                    self.consumer = MultiConsumer(
+                        self.redis,
+                        num_consumers=consumer_count,
+                        batch_size=settings.stream_consumer_batch_size,
+                        block_ms=settings.stream_consumer_block_ms,
+                    )
+                else:
+                    self.consumer = StreamConsumer(
+                        self.redis,
+                        batch_size=settings.stream_consumer_batch_size,
+                        block_ms=settings.stream_consumer_block_ms,
+                    )
 
-        # Initialize health checker
+        # Health checker (always needed)
         self.health_checker = HealthChecker(self.metrics, redis_client=self.redis)
 
         self._running = True
-        logger.info("Pocketwatcher started successfully!")
+        logger.info(f"Pocketwatcher started successfully! (mode={self.mode})")
 
-        # Send test messages
-        if self.discord.is_configured():
-            await self.discord.send_test_message()
-        if self.telegram.is_configured():
-            await self.telegram.send_test_message()
+        # Send test messages (only in detect or all mode)
+        if needs_detect:
+            if self.discord and self.discord.is_configured():
+                await self.discord.send_test_message()
+            if self.telegram and self.telegram.is_configured():
+                await self.telegram.send_test_message()
 
     async def stop(self):
         """Stop all components gracefully."""
@@ -267,22 +301,41 @@ class Application:
         logger.info("Pocketwatcher stopped.")
 
     async def run(self):
-        """Run the main application loop."""
-        # Start background tasks
-        self._tasks = [
-            asyncio.create_task(self._run_ingest()),
-            asyncio.create_task(self._run_detection_loop()),
-            asyncio.create_task(self._run_stats_loop()),
-            asyncio.create_task(self.swap_flusher.run()),
-            asyncio.create_task(self._run_maintenance_loop()),
-            asyncio.create_task(self.health_checker.health_check_loop()),
-        ]
+        """Run the main application loop based on mode."""
+        self._tasks = []
 
-        # Add consumer task based on mode
-        if self.high_throughput:
-            self._tasks.append(asyncio.create_task(self._run_batch_consumer()))
-        else:
-            self._tasks.append(asyncio.create_task(self._run_consumer()))
+        # Determine which tasks to run based on mode
+        needs_ingest = self.mode in ("all", "ingest")
+        needs_consume = self.mode in ("all", "consume")
+        needs_detect = self.mode in ("all", "detect")
+
+        # Stats and health check (always run)
+        self._tasks.append(asyncio.create_task(self._run_stats_loop()))
+        self._tasks.append(asyncio.create_task(self.health_checker.health_check_loop()))
+
+        # Ingest task
+        if needs_ingest and self.yellowstone:
+            self._tasks.append(asyncio.create_task(self._run_ingest()))
+
+        # Consumer task
+        if needs_consume:
+            if self.high_throughput and self.batch_consumer:
+                self._tasks.append(asyncio.create_task(self._run_batch_consumer()))
+            elif self.consumer:
+                self._tasks.append(asyncio.create_task(self._run_consumer()))
+
+            # Swap flusher (needed for consume)
+            if self.swap_flusher:
+                self._tasks.append(asyncio.create_task(self.swap_flusher.run()))
+
+            # Maintenance loop (needed for consume)
+            self._tasks.append(asyncio.create_task(self._run_maintenance_loop()))
+
+        # Detection loop
+        if needs_detect and self.processor:
+            self._tasks.append(asyncio.create_task(self._run_detection_loop()))
+
+        logger.info(f"Started {len(self._tasks)} background tasks for mode={self.mode}")
 
         # Wait for shutdown
         await self._shutdown_event.wait()
@@ -610,9 +663,26 @@ def setup_signal_handlers(app: Application):
         signal.signal(signal.SIGBREAK, handler)
 
 
-async def main(use_mock: bool = False, high_throughput: bool = True):
-    """Main entry point."""
-    app = Application(use_mock_stream=use_mock, high_throughput=high_throughput)
+async def main(
+    use_mock: bool = False,
+    high_throughput: bool = True,
+    mode: str = "all",
+    consumer_name: Optional[str] = None,
+):
+    """Main entry point.
+
+    Args:
+        use_mock: Use mock stream instead of real Yellowstone
+        high_throughput: Use batched consumer with Redis pipelining
+        mode: Run mode - "all", "ingest", "consume", or "detect"
+        consumer_name: Consumer name for XREADGROUP
+    """
+    app = Application(
+        use_mock_stream=use_mock,
+        high_throughput=high_throughput,
+        mode=mode,
+        consumer_name=consumer_name,
+    )
 
     # Setup cross-platform signal handlers
     setup_signal_handlers(app)
@@ -631,6 +701,7 @@ async def main(use_mock: bool = False, high_throughput: bool = True):
 
 if __name__ == "__main__":
     import argparse
+    import os
 
     parser = argparse.ArgumentParser(description="Pocketwatcher - Solana CTO Monitor")
     parser.add_argument(
@@ -649,9 +720,55 @@ if __name__ == "__main__":
         help="Use legacy consumer (disable high-throughput mode)"
     )
 
+    # Multi-process mode flags (mutually exclusive for clarity)
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--ingest-only",
+        action="store_true",
+        help="Run only Yellowstone ingest (no processing, no detection)"
+    )
+    mode_group.add_argument(
+        "--consume-only",
+        action="store_true",
+        help="Run only stream consumer/processor (no ingest, no detection)"
+    )
+    mode_group.add_argument(
+        "--detect-only",
+        action="store_true",
+        help="Run only detection/alerts (no ingest, no processing)"
+    )
+
+    parser.add_argument(
+        "--consumer-name",
+        type=str,
+        default=None,
+        help="Consumer name for XREADGROUP (default: auto-generated from hostname-pid)"
+    )
+
     args = parser.parse_args()
 
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    asyncio.run(main(use_mock=args.mock, high_throughput=not args.legacy))
+    # Determine run mode
+    if args.ingest_only:
+        mode = "ingest"
+    elif args.consume_only:
+        mode = "consume"
+    elif args.detect_only:
+        mode = "detect"
+    else:
+        mode = "all"
+
+    # Consumer name from arg, env, or auto-generate
+    consumer_name = args.consumer_name or os.environ.get("CONSUMER_NAME")
+    if not consumer_name and mode in ("consume", "all"):
+        import socket
+        consumer_name = f"parser-{socket.gethostname()}-{os.getpid()}"
+
+    asyncio.run(main(
+        use_mock=args.mock,
+        high_throughput=not args.legacy,
+        mode=mode,
+        consumer_name=consumer_name,
+    ))
