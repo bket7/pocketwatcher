@@ -314,6 +314,8 @@ class BatchConsumer:
             # Extract raw messages from claimed
             raw_messages: List[Tuple[bytes, bytes]] = []
             for msg_id, fields in claimed:
+                if fields is None:
+                    continue
                 raw_data = fields.get(b"data") or fields.get("data")
                 if raw_data:
                     raw_messages.append((msg_id, raw_data))
