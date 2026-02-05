@@ -266,13 +266,9 @@ class BatchConsumer:
             if on_error:
                 await on_error(None, e)
 
-        # Phase 5: Execute accumulated writes (1 RTT)
-        if ctx._write_pipeline_commands or ctx._counter_updates:
-            await ctx._execute_writes()
-
-        # Phase 6: ACK all messages
+        # Phase 5: Execute accumulated writes + ACK all messages (1 RTT)
         all_msg_ids = [m[0] for m in raw_messages]
-        await self.redis.ack_messages(all_msg_ids)
+        await ctx._execute_writes(ack_message_ids=all_msg_ids)
 
     async def _claim_pending_messages(
         self,
@@ -424,13 +420,20 @@ class BatchContext:
             "set", (f"price:{mint}", str(price_sol)), {"ex": ttl}
         ))
 
-    async def _execute_writes(self):
-        """Execute all accumulated writes in one pipeline."""
-        if not self._write_pipeline_commands and not self._counter_updates:
+    async def _execute_writes(self, ack_message_ids: Optional[List[bytes]] = None) -> None:
+        """Execute all accumulated writes in one pipeline (optionally ACK messages)."""
+        if not self._write_pipeline_commands and not self._counter_updates and not ack_message_ids:
             return
 
         pipe = self._consumer.redis.redis.pipeline(transaction=False)
         now = int(time.time())
+        expire_keys: Set[str] = set()
+
+        def expire_once(key: str, ttl_seconds: int) -> None:
+            if key in expire_keys:
+                return
+            pipe.expire(key, ttl_seconds)
+            expire_keys.add(key)
 
         # Add explicit commands
         for cmd, args, kwargs in self._write_pipeline_commands:
@@ -450,19 +453,30 @@ class BatchContext:
 
             # 5-minute buckets
             bucket_5m = now // 300
-            pipe.incrby(f"{metric_prefix}:300s:{bucket_5m}:{mint}", count)
-            pipe.expire(f"{metric_prefix}:300s:{bucket_5m}:{mint}", 900)
-            pipe.pfadd(f"{buyer_prefix}:300s:{bucket_5m}:{mint}", wallet)
-            pipe.expire(f"{buyer_prefix}:300s:{bucket_5m}:{mint}", 900)
-            pipe.incrbyfloat(f"volume:300s:{bucket_5m}:{mint}", volume)
-            pipe.expire(f"volume:300s:{bucket_5m}:{mint}", 900)
+            count_key = f"{metric_prefix}:300s:{bucket_5m}:{mint}"
+            buyers_key = f"{buyer_prefix}:300s:{bucket_5m}:{mint}"
+            volume_key = f"volume:300s:{bucket_5m}:{mint}"
+            pipe.incrby(count_key, count)
+            expire_once(count_key, 900)
+            pipe.pfadd(buyers_key, wallet)
+            expire_once(buyers_key, 900)
+            pipe.incrbyfloat(volume_key, volume)
+            expire_once(volume_key, 900)
 
-            # Track wallet first-seen
-            pipe.setnx(f"wallet:first_seen:{wallet}", now)
-            pipe.expire(f"wallet:first_seen:{wallet}", 86400 * 7)
+        # Track wallet first-seen (single command)
+        pipe.set(f"wallet:first_seen:{wallet}", now, nx=True, ex=86400 * 7)
+
+        ack_commands = 0
+        if ack_message_ids:
+            pipe.xack(TX_STREAM, CONSUMER_GROUP, *ack_message_ids)
+            ack_commands = 1
 
         self._consumer._pipeline_calls += 1
-        self._consumer._pipeline_commands += len(self._write_pipeline_commands) + len(self._counter_updates) * 8
+        self._consumer._pipeline_commands += (
+            len(self._write_pipeline_commands)
+            + len(self._counter_updates) * 8
+            + ack_commands
+        )
 
         await pipe.execute()
 

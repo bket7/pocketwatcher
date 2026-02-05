@@ -81,12 +81,16 @@ class BatchProcessor:
         pending_delta_records: List[TxDeltaRecord] = []
         pending_mint_events: List[MintTouchedEvent] = []
 
+        stream_len = getattr(ctx, "stream_length", 0) or 0
+        record_logs = stream_len < settings.critical_stream_len
+
         for tx_data in transactions:
             await self._process_single(
                 tx_data,
                 ctx,
                 pending_delta_records,
                 pending_mint_events,
+                record_logs,
             )
 
         # Batch write delta records and mint events (local I/O, not Redis)
@@ -110,6 +114,7 @@ class BatchProcessor:
         ctx,  # BatchContext
         pending_delta_records: List[TxDeltaRecord],
         pending_mint_events: List[MintTouchedEvent],
+        record_logs: bool,
     ):
         """Process a single transaction within a batch."""
         self._processed_count += 1
@@ -127,40 +132,49 @@ class BatchProcessor:
         # Build deltas (pure Python)
         token_deltas, sol_deltas = self.delta_builder.build_deltas(tx_data)
 
-        # Extract metadata (pure Python)
-        mints_touched = self.delta_builder.extract_mints_touched(token_deltas)
-        programs_invoked = self.delta_builder.extract_program_ids(tx_data)
+        programs_invoked = None
 
-        # Create MintTouchedEvent (accumulate for batch write)
-        mint_event = MintTouchedEvent(
-            signature=signature,
-            slot=slot,
-            block_time=block_time,
-            fee_payer=fee_payer,
-            mints_touched=mints_touched,
-            programs_invoked=programs_invoked,
-        )
-        pending_mint_events.append(mint_event)
+        if record_logs:
+            # Extract metadata (pure Python)
+            programs_invoked = self.delta_builder.extract_program_ids(tx_data)
+            mints_touched = self.delta_builder.extract_mints_touched(token_deltas)
 
-        # Create TxDeltaRecord (accumulate for batch write)
-        delta_record = TxDeltaRecord(
-            signature=signature,
-            slot=slot,
-            block_time=block_time,
-            fee_payer=fee_payer,
-            programs_invoked=programs_invoked,
-            token_deltas=[(o, m, amt) for (o, m), amt in token_deltas.items()],
-            sol_deltas=sol_deltas,
-            mints_touched=mints_touched,
-            tx_fee=tx_data.get("fee", 0),
-        )
-        pending_delta_records.append(delta_record)
+            # Create MintTouchedEvent (accumulate for batch write)
+            mint_event = MintTouchedEvent(
+                signature=signature,
+                slot=slot,
+                block_time=block_time,
+                fee_payer=fee_payer,
+                mints_touched=mints_touched,
+                programs_invoked=programs_invoked,
+            )
+            pending_mint_events.append(mint_event)
+
+            # Create TxDeltaRecord (accumulate for batch write)
+            delta_record = TxDeltaRecord(
+                signature=signature,
+                slot=slot,
+                block_time=block_time,
+                fee_payer=fee_payer,
+                programs_invoked=programs_invoked,
+                token_deltas=[(o, m, amt) for (o, m), amt in token_deltas.items()],
+                sol_deltas=sol_deltas,
+                mints_touched=mints_touched,
+                tx_fee=tx_data.get("fee", 0),
+            )
+            pending_delta_records.append(delta_record)
 
         # Update metrics
         if self.metrics:
             self.metrics.inc("tx_processed_total")
 
+        # Fast path: no token deltas means no swap
+        if not token_deltas:
+            return
+
         # Swap inference (pure Python)
+        if programs_invoked is None:
+            programs_invoked = self.delta_builder.extract_program_ids(tx_data)
         candidates = self.delta_builder.get_candidate_users(token_deltas, fee_payer)
         swap = self.inference.infer_swap(token_deltas, sol_deltas, candidates)
         venue = self.inference.identify_venue(programs_invoked)

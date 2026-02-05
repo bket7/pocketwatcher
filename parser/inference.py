@@ -68,15 +68,23 @@ class SwapInference:
         # Merge WSOL into SOL for unified quote handling
         merged_sol = self.delta_builder.normalize_wsol_to_sol(token_deltas, sol_deltas)
 
+        # Pre-group token deltas by owner to avoid N*M scans
+        owner_token_deltas: Dict[str, Dict[Tuple[str, str], int]] = {}
+        for (owner, mint), amt in token_deltas.items():
+            if mint == WSOL_MINT:
+                continue
+            owner_map = owner_token_deltas.get(owner)
+            if owner_map is None:
+                owner_map = {}
+                owner_token_deltas[owner] = owner_map
+            owner_map[(owner, mint)] = amt
+
         best_swap: Optional[SwapCandidate] = None
         best_confidence = 0.0
 
         for user in candidates:
             # Token deltas for this user (excluding WSOL)
-            user_token_deltas = {
-                (o, m): amt for (o, m), amt in token_deltas.items()
-                if o == user and m != WSOL_MINT
-            }
+            user_token_deltas = owner_token_deltas.get(user, {})
 
             # SOL/WSOL delta for this user (merged)
             user_sol_delta = merged_sol.get(user, 0)

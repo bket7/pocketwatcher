@@ -173,7 +173,7 @@ class Application:
             )
             self.batch_consumer = MultiBatchConsumer(
                 self.redis,
-                num_consumers=min(consumer_count, 4),  # 4 batch consumers is usually optimal
+                num_consumers=min(consumer_count, 8),  # Allow higher parallelism when configured
                 batch_size=512,  # Larger batches for better pipelining
                 block_ms=500,
             )
@@ -479,10 +479,27 @@ class Application:
 
         while self._running:
             try:
-                await asyncio.sleep(1)  # Evaluate every second
+                # Throttle detection when backlog is high
+                summary = self.metrics.get_summary()
+                stream_len = summary.get("stream_length", 0)
+                if stream_len >= settings.critical_stream_len:
+                    await asyncio.sleep(5)
+                    continue
+                elif stream_len >= settings.degraded_stream_len:
+                    sleep_s = 2
+                    max_mints = 500
+                else:
+                    sleep_s = 1
+                    max_mints = None
+
+                await asyncio.sleep(sleep_s)
 
                 # Get all active mints and evaluate triggers
                 active_mints = await self.processor.counter_manager.get_active_mints()
+
+                if max_mints is not None and len(active_mints) > max_mints:
+                    # Limit evaluations under heavy load
+                    active_mints = list(active_mints)[:max_mints]
 
                 for mint in active_mints:
                     # Skip if already HOT
@@ -555,8 +572,9 @@ class Application:
                     f"lag: {summary['processing_lag_seconds']:.1f}s"
                 )
 
-                # Cleanup inactive mints
-                await self.processor.counter_manager.cleanup_inactive()
+                # Cleanup inactive mints (skip under heavy backlog)
+                if summary["stream_length"] <= settings.degraded_stream_len:
+                    await self.processor.counter_manager.cleanup_inactive()
 
                 # Refresh HOT tokens
                 await self.processor.state_manager.refresh_hot_tokens()
