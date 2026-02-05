@@ -1,0 +1,277 @@
+# Pocketwatcher Handoff — 2026-02-05
+
+## Repo & Runtime
+
+- **Repo**: `C:\Users\Administrator\Desktop\Active\pocketwatcher\`
+- **Entry**: `main.py` — runs via NSSM as a Windows service
+- **Stream key**: `stream:tx` (NOT `pocketwatcher:txs` — runbook is wrong)
+- **Consumer group**: `parsers`, consumers `batch-1` through `batch-8`
+- **Redis**: `redis://localhost:6379/0`
+
+---
+
+## Current Performance
+
+| Metric | Value |
+|---|---|
+| `XLEN stream:tx` | 100,000 (maxed, not draining) |
+| `XPENDING stream:tx parsers` | 4,000–7,000 |
+| `tx_per_second_60s` | ~320–370 tx/s |
+| Target | 400–600 tx/s |
+| Consumers | 8 async (`batch-1..batch-8`), single process |
+| Swaps detected | Counters increasing steadily |
+| Fatal errors | None since last restart |
+
+---
+
+## What's Working
+
+- Consumers are active, pending messages spread across all 8.
+- Swaps are detected (counters move), HOT tokens appear.
+- No fatal errors in worker logs.
+
+## What's NOT Working
+
+- **Backlog pinned at 100k** — ingest rate exceeds processing rate. Older txs are being trimmed/lost.
+- **Throughput flatlined at ~320–370 tx/s** — classic GIL-bound single-process ceiling.
+- Adding more async consumers within one process does NOT help (already proven).
+
+---
+
+## PRIORITY 1: Fix Two Correctness Bugs Before Scaling
+
+These MUST be fixed before any multi-process work. Scaling out with these bugs will make debugging impossible.
+
+### Bug A: Pending claim drops work silently
+
+**File**: `stream/batch_consumer.py` → `_claim_pending_messages()`
+
+**Problem**: The method does `XPENDING_RANGE` → `XCLAIM` → then **ACKs claimed messages without processing them** (there's a `pass` where processing should happen). Claimed pending messages are effectively discarded.
+
+**Impact**: Doesn't directly cause low tx/s, but breaks correctness. Any message that wasn't ACKed on first attempt is silently lost when claimed.
+
+**Fix**: Claimed messages must either be **re-processed through the batch pipeline** or **re-added to the stream**. Do not ACK without processing.
+
+### Bug B: Pipeline write depends on loop variable, can skip ACK
+
+**File**: `core/batch_processor.py` → `BatchContext._execute_writes()`
+
+**Problem**: `wallet:first_seen:{wallet}` is set **outside** the loop that defines `wallet`. Two consequences:
+1. If `_counter_updates` is empty for a batch, this write throws an exception, and **ACK never executes** → XPENDING rises.
+2. Even when it works, it only writes `first_seen` for the **last** wallet in the batch, not all wallets.
+
+**Impact**: This is a prime suspect for XPENDING hovering at 4k–7k. Failed ACKs cause messages to stay pending, get reclaimed, then get dropped by Bug A. Check logs for sporadic pipeline/write errors (may only appear at debug level).
+
+**Fix**: Move the `first_seen` write inside the wallet loop. Wrap non-critical writes in try/except so ACK always executes. Never let a cosmetic write failure prevent acknowledgment.
+
+---
+
+## PRIORITY 2: Profile Before Optimizing
+
+Before writing any multi-process code, verify WHERE time is actually spent.
+
+### Quick diagnostic checks (no code changes needed)
+
+1. **Check CPU usage of the python worker process**:
+   - If it's pegging ~1 core (e.g., 12–25% on 8-core/16-thread), confirmed GIL/CPU-bound → multi-process is mandatory.
+   - If CPU is low, the bottleneck is I/O (Redis RTT, network) — different fix needed.
+
+2. **Check if detection loop is stealing CPU**:
+   - Temporarily disable the detection/alerts loop and observe tx/s.
+   - If tx/s jumps meaningfully, detection is a CPU thief and must run in a separate process.
+
+3. **Watch XPENDING during error bursts**:
+   - If XPENDING climbs in spikes, correlate with log errors — this confirms Bug B (ACK failures).
+
+### Profiling tools (install + run, no code edits)
+
+```powershell
+# py-spy: sampling profiler, attach to running process
+pip install py-spy
+py-spy record --gil --pid <WORKER_PID> -o profile.svg -d 30
+
+# This generates a flame graph showing:
+# - Where CPU time is spent
+# - Whether GIL contention exists
+# - Which functions are hot (parsing? inference? serialization?)
+```
+
+If profiling reveals JSON serialization is a major cost, the fix is trivial — see Quick Wins below. If it's `BatchProcessor.process_batch()` or `parser/inference.py`, multi-process is the answer.
+
+---
+
+## PRIORITY 3: Quick Wins (Apply Immediately)
+
+These are low-risk changes that can each deliver 10–30% improvement independently.
+
+### 3a. Switch to orjson
+
+If using `json.dumps()`/`json.loads()` anywhere in the hot path, replace with `orjson`. Benchmarks show 5–6x faster serialization. If using msgpack already, this may not apply — check imports.
+
+```
+pip install orjson
+```
+
+Replace: `json.dumps(data)` → `orjson.dumps(data)` (returns bytes, Redis accepts directly)
+Replace: `json.loads(raw)` → `orjson.loads(raw)`
+
+### 3b. Install hiredis for C-based Redis parsing
+
+```
+pip install hiredis
+```
+
+redis-py auto-detects and uses it. No code changes. Speeds up RESP protocol parsing.
+
+### 3c. Batch Redis pipeline operations
+
+If ACKs or counter updates are done individually per message, batch them. A single `pipeline.execute()` with 100 ACKs = 1 round-trip instead of 100.
+
+Verify this is already happening (handoff says "ACKs merged into same pipeline as counter updates" — confirm it's actually batched, not just sequential in the same pipeline call).
+
+### 3d. Optimize XREADGROUP parameters
+
+Recommended: `COUNT=100`, `BLOCK=2000`. With 8 consumers each handling 40–50 tx/s, COUNT=100 gives good batch efficiency. If COUNT is currently lower (e.g., 10–20), increasing it will reduce per-message overhead significantly.
+
+---
+
+## PRIORITY 4: Multi-Process Split (The Big Fix)
+
+This is the primary path to 400–600 tx/s. Each OS process gets its own GIL, enabling true CPU parallelism.
+
+### Target architecture
+
+```
+Process A: INGEST ONLY
+  Yellowstone gRPC → Redis stream (XADD)
+  Nothing else. No parsing, no Postgres, no detection.
+
+Process B/C/D: CONSUME ONLY (2–4 instances)
+  Redis stream → BatchConsumer → BatchProcessor
+  Parsing, inference, counters, DB queue
+  Each process: 2–4 async consumers (NOT 8)
+
+Process E: DETECTION/ALERTS ONLY (exactly 1 instance)
+  Reads counters from Redis
+  Emits Discord/Telegram alerts
+  Must be single instance to avoid duplicate alerts
+```
+
+### Why this works
+
+Redis consumer groups handle load balancing automatically. Multiple processes calling `XREADGROUP` with the same group (`parsers`) but different consumer names get messages distributed round-robin. No coordination code needed.
+
+Expected result: **4 consume processes × ~150 tx/s each = ~600 tx/s**
+
+### Implementation approach: CLI flags
+
+Add to `main.py`:
+- `--ingest-only` → runs only Yellowstone → Redis
+- `--consume-only` → runs only BatchConsumer workers
+- `--detect-only` → runs only detection/alerts
+- No flags → current behavior (backward compatible)
+
+### NSSM service setup (one service per process)
+
+```
+pocketwatcher-ingest   → python main.py --ingest-only
+pocketwatcher-worker-1 → python main.py --consume-only
+pocketwatcher-worker-2 → python main.py --consume-only
+pocketwatcher-worker-3 → python main.py --consume-only
+pocketwatcher-detect   → python main.py --detect-only
+```
+
+Each gets its own NSSM service for independent restart, logging, and monitoring.
+
+### Consumer naming for multi-process
+
+Use `CONSUMER_NAME` env var or derive from hostname+PID: `parser-{hostname}-{pid}`. This makes `XINFO CONSUMERS` output debuggable.
+
+### Dedup strategy for multi-process
+
+- **Redis SET NX dedup** (`stream/dedup.py`): Already cross-process safe. Keep as primary dedup.
+- **Local TTL cache** (`stream/dedup.py`): Only effective within a single process. In multi-process mode, this becomes "best effort" — duplicates WILL occur across processes. This is fine as long as Redis NX is the authoritative check.
+- Do NOT add any new local-only dedup that assumes single-process.
+
+### Pending message recovery for multi-process
+
+Use `XAUTOCLAIM` (Redis 6.2+) instead of manual XPENDING_RANGE + XCLAIM:
+
+```
+XAUTOCLAIM stream:tx parsers recovery-worker 60000 0-0 COUNT 100
+```
+
+Run a dedicated recovery sweep every 30–60 seconds. On consumer startup, drain pending first (read with `0` ID) before consuming new messages (read with `>`).
+
+---
+
+## PRIORITY 5: Advanced Optimizations (Only If Still Short)
+
+Only pursue these AFTER multi-process is running and profiled.
+
+### 5a. Cython for hot-path functions
+
+If `parser/inference.py` or `core/batch_processor.py` shows up as dominant in py-spy flamegraph, Cython can give 5–20x on tight loops. Most mature GIL-bypass option.
+
+### 5b. Rust via PyO3 for parsing
+
+If parsing Solana transactions is the bottleneck, the `solana-sdk` Rust crate provides native `VersionedTransaction` deserialization. PyO3 can release the GIL during Rust computation. Expect 5–15x speedup but 2–3 weeks dev time.
+
+### 5c. Python 3.14 free-threaded mode
+
+Available with `PYTHON_GIL=0` or `python -X gil=0`. True threading without GIL. But: experimental, verify all dependencies work (hiredis compatibility uncertain). Single-threaded overhead is now only 5–10%.
+
+### 5d. PyPy
+
+4.7x average speedup via JIT, but **hiredis has known segfault issues on PyPy**. Would need to run redis-py without hiredis. Test thoroughly before deploying.
+
+---
+
+## Data Loss Warning
+
+`XLEN` pinned at 100,000 with continuous ingestion means **older transactions are being trimmed and lost**. Decide:
+
+- **If loss is acceptable**: Current behavior is fine. Document the tradeoff.
+- **If loss is NOT acceptable**: Either increase `MAXLEN` (memory tradeoff) or implement ingest backpressure (slow down XADD when XLEN > threshold).
+
+This is independent of the throughput problem — even at 600 tx/s, if ingest exceeds that rate, trimming continues.
+
+---
+
+## Files Changed This Session (Prior)
+
+- `core/batch_processor.py`
+- `stream/batch_consumer.py`
+- `stream/dedup.py`
+- `main.py`
+- `parser/inference.py`
+- `storage/delta_log.py`
+
+## Verification Commands
+
+```powershell
+# Stream backlog
+python -c "import redis; r=redis.Redis.from_url('redis://localhost:6379/0', decode_responses=True); print('XLEN:', r.xlen('stream:tx'))"
+
+# Pending messages
+python -c "import redis; r=redis.Redis.from_url('redis://localhost:6379/0', decode_responses=True); print(r.xpending('stream:tx','parsers'))"
+
+# Live stats
+python -c "import redis, json; r=redis.Redis.from_url('redis://localhost:6379/0', decode_responses=True); print(json.dumps(json.loads(r.get('pocketwatcher:live_stats')), indent=2))"
+
+# CPU usage of worker (find PID first)
+tasklist | findstr python
+# Then use py-spy or Task Manager to check single-core utilization
+```
+
+---
+
+## Summary: Do This In Order
+
+1. **Fix Bug A** (pending claim ACKs without processing) — `stream/batch_consumer.py`
+2. **Fix Bug B** (pipeline write / ACK safety) — `core/batch_processor.py`
+3. **Profile** with py-spy to confirm CPU-bound assumption
+4. **Apply quick wins** (orjson, hiredis, pipeline batching, COUNT tuning)
+5. **Implement multi-process split** (ingest / consume / detect as separate processes)
+6. **Deploy 2–4 consume processes** via NSSM, monitor tx/s and XPENDING
+7. **Only then** consider Cython/Rust/free-threading if still below target
