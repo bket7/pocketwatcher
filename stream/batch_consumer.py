@@ -321,8 +321,10 @@ class BatchConsumer:
                     raw_messages.append((msg_id, raw_data))
 
             if not raw_messages:
-                # No data to process, ACK the empty claims
-                await self.redis.ack_messages([m[0] for m in claimed])
+                # No data to process, ACK the valid claims
+                valid_ids = [m[0] for m in claimed if m[0] is not None]
+                if valid_ids:
+                    await self.redis.ack_messages(valid_ids)
                 return
 
             # Parse all claimed messages (same logic as _process_batch)
