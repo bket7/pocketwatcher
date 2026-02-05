@@ -9,6 +9,7 @@ aiofiles>=23.0.0
 
 # Redis
 redis>=5.0.0
+hiredis>=2.0.0  # C-based parser for faster RESP parsing
 
 # PostgreSQL
 asyncpg>=0.28.0
